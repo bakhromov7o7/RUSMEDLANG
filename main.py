@@ -20,11 +20,11 @@ async def startup_event():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     
-    # Start Telegram Bot in background
+    # Start Telegram Bot properly
     bot_app = create_bot_application()
-    asyncio.create_task(bot_app.initialize())
-    asyncio.create_task(bot_app.start())
-    asyncio.create_task(bot_app.updater.start_polling())
+    await bot_app.initialize()
+    await bot_app.start()
+    await bot_app.updater.start_polling()
     print("Telegram bot started.")
 
 @app.get("/")
