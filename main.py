@@ -4,7 +4,19 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.bot.bot import create_bot_application
 from app.database import engine, Base
 
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
+import logging
+
 app = FastAPI(title="Ustoz AI API")
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    logging.error(f"Global error: {exc}", exc_info=True)
+    return JSONResponse(
+        status_code=500,
+        content={"detail": str(exc)},
+    )
 
 app.add_middleware(
     CORSMiddleware,
