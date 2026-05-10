@@ -1,0 +1,80 @@
+import os
+from fpdf import FPDF
+from datetime import datetime
+
+class PDFService:
+    def _clean_text(self, text: str):
+        if not text:
+            return ""
+        # Replace common Uzbek special characters with Latin-1 equivalents
+        replacements = {
+            "ʻ": "'",
+            "ʼ": "'",
+            "“": "\"",
+            "”": "\"",
+            "–": "-",
+            "—": "-",
+        }
+        for old, new in replacements.items():
+            text = text.replace(old, new)
+        # Encode to latin-1 and back to ignore other characters that might crash FPDF
+        return text.encode('latin-1', 'ignore').decode('latin-1')
+
+    def generate_quiz_report(self, user_full_name: str, topic_title: str, results: list, score: int, total: int):
+        user_full_name = self._clean_text(user_full_name)
+        topic_title = self._clean_text(topic_title)
+        
+        pdf = FPDF()
+        pdf.add_page()
+        
+        # Title
+        pdf.set_font("Helvetica", "B", 16)
+        pdf.cell(0, 10, "Ustoz AI - Test Natijalari", ln=True, align="C")
+        pdf.set_font("Helvetica", "", 12)
+        pdf.cell(0, 10, f"Sana: {datetime.now().strftime('%d.%m.%Y %H:%M')}", ln=True, align="C")
+        pdf.ln(10)
+        
+        # User Info
+        pdf.set_font("Helvetica", "B", 12)
+        pdf.cell(0, 10, f"Talaba: {user_full_name}", ln=True)
+        pdf.cell(0, 10, f"Mavzu: {topic_title}", ln=True)
+        pdf.cell(0, 10, f"Natija: {score} / {total} ({int(score/total*100)}%)", ln=True)
+        pdf.ln(5)
+        pdf.line(10, pdf.get_y(), 200, pdf.get_y())
+        pdf.ln(10)
+        
+        # Questions
+        for i, item in enumerate(results, 1):
+            pdf.set_font("Helvetica", "B", 11)
+            # Question text
+            question_text = self._clean_text(item['question'])
+            pdf.multi_cell(0, 7, f"{i}. {question_text}")
+            
+            pdf.set_font("Helvetica", "", 10)
+            for opt, text in item['options'].items():
+                text = self._clean_text(text)
+                prefix = ""
+                if opt == item['user_answer']:
+                    prefix = "[X] " if item['user_answer'] == item['correct_option'] else "[!] "
+                elif opt == item['correct_option']:
+                    prefix = "(*) "
+                else:
+                    prefix = "    "
+                
+                pdf.cell(0, 6, f"{prefix} {opt}: {text}", ln=True)
+            
+            pdf.set_font("Helvetica", "I", 9)
+            pdf.set_text_color(100, 100, 100)
+            explanation_text = self._clean_text(item['explanation'])
+            pdf.multi_cell(0, 6, f"Izoh: {explanation_text}")
+            pdf.set_text_color(0, 0, 0)
+            pdf.ln(5)
+            
+            if pdf.get_y() > 250:
+                pdf.add_page()
+
+        # Save PDF
+        os.makedirs("reports", exist_ok=True)
+        filename = f"reports/quiz_{datetime.now().timestamp()}.pdf"
+        pdf.output(filename)
+        return filename
