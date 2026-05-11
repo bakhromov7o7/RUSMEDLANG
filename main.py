@@ -12,10 +12,14 @@ app = FastAPI(title="Ustoz AI API")
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
-    logging.error(f"Global error: {exc}", exc_info=True)
+    logging.error(f"Global error on {request.url.path}: {exc}", exc_info=True)
     return JSONResponse(
         status_code=500,
-        content={"detail": str(exc)},
+        content={
+            "detail": str(exc),
+            "path": request.url.path,
+            "type": type(exc).__name__
+        },
     )
 
 app.add_middleware(
