@@ -18,15 +18,21 @@ class TopicCreateRequest(BaseModel):
 
 @router.post("/")
 async def create_topic(req: TopicCreateRequest, db: AsyncSession = Depends(get_db)):
-    # 1. Verify employee
-    result = await db.execute(select(User).where(User.id == req.employee_id))
+    # 1. Verify employee (check both internal ID and telegram_user_id to be safe)
+    result = await db.execute(
+        select(User).where((User.id == req.employee_id) | (User.telegram_user_id == req.employee_id))
+    )
     employee = result.scalar_one_or_none()
     if not employee:
-        raise HTTPException(status_code=404, detail="Employee not found")
+        raise HTTPException(status_code=404, detail=f"Employee with ID {req.employee_id} not found")
+    
+    if employee.role not in [UserRole.employee, UserRole.superadmin]:
+        raise HTTPException(status_code=403, detail="Only employees can create topics")
 
-    # 2. Create Topic
-    topic = Topic(
-        employee_user_id=req.employee_id,
+    try:
+        # 2. Create Topic
+        topic = Topic(
+            employee_user_id=employee.id,
         title=req.title,
         description=req.description,
         status=TopicStatus.active
@@ -68,7 +74,12 @@ async def create_topic(req: TopicCreateRequest, db: AsyncSession = Depends(get_d
         )
         db.add(chunk)
 
-    await db.commit()
+        await db.commit()
+    except Exception as e:
+        await db.rollback()
+        logging.error(f"Error creating topic: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+
     return {"status": "success", "topic_id": topic.id}
 
 from sqlalchemy.orm import selectinload
