@@ -12,3 +12,4 @@ python-multipart
 alembic
 fpdf2
 asyncpg
+greenlet
