@@ -61,30 +61,114 @@ async def generate_quiz(request: QuizStartRequest, db: AsyncSession = Depends(ge
         print(f"Raw AI Output: {quiz_json_raw}")
         raise HTTPException(status_code=500, detail="Failed to parse AI generated quiz.")
 
-class QuizReportRequest(BaseModel):
-    user_full_name: str
-    topic_title: str
-    results: List[Dict]
-    score: int
-    total: int
+from app.models import QuizAttempt, QuizQuestion
 
-@router.post("/report/pdf")
-async def get_pdf_report(request: QuizReportRequest):
+@router.post("/submit")
+async def submit_quiz(req: QuizSubmitRequest, db: AsyncSession = Depends(get_db)):
+    # 1. Fetch user and topic (validation)
+    result = await db.execute(select(Topic).where(Topic.id == req.topic_id))
+    topic = result.scalar_one_or_none()
+    if not topic:
+        raise HTTPException(status_code=404, detail="Topic not found")
+    
+    # 2. Create QuizAttempt
+    attempt = QuizAttempt(
+        student_user_id=req.user_id,
+        topic_id=req.topic_id,
+        employee_user_id=topic.employee_user_id,
+        total_questions=len(req.answers),
+        correct_answers=0
+    )
+    db.add(attempt)
+    await db.flush()
+
+    correct_count = 0
+    for i, ans in enumerate(req.answers):
+        is_correct = ans.get('is_correct', False)
+        if is_correct: correct_count += 1
+        
+        q = QuizQuestion(
+            quiz_attempt_id=attempt.id,
+            question_order=i,
+            question_text=ans.get('question', ''),
+            expected_answer=ans.get('correct_option', ''),
+            student_answer=ans.get('user_answer', ''),
+            is_correct=is_correct
+        )
+        db.add(q)
+    
+    attempt.correct_answers = correct_count
+    await db.commit()
+    
+    return {"status": "success", "attempt_id": attempt.id, "score": correct_count}
+
+@router.get("/report/pdf")
+async def get_pdf_report_by_id(attempt_id: int, db: AsyncSession = Depends(get_db)):
     try:
+        # Fetch attempt and user data
+        result = await db.execute(
+            select(QuizAttempt).where(QuizAttempt.id == attempt_id)
+        )
+        attempt = result.scalar_one_or_none()
+        if not attempt:
+            raise HTTPException(status_code=404, detail="Attempt not found")
+            
+        topic_res = await db.execute(select(Topic).where(Topic.id == attempt.topic_id))
+        topic = topic_res.scalar_one()
+        
+        user_res = await db.execute(select(User).where(User.id == attempt.student_user_id))
+        user = user_res.scalar_one()
+        
+        questions_res = await db.execute(
+            select(QuizQuestion).where(QuizQuestion.quiz_attempt_id == attempt_id).order_by(QuizQuestion.question_order)
+        )
+        questions = questions_res.scalars().all()
+        
+        results = []
+        for q in questions:
+            results.append({
+                "question": q.question_text,
+                "correct_option": q.expected_answer,
+                "user_answer": q.student_answer,
+                "is_correct": q.is_correct
+            })
+
         filepath = pdf_service.generate_quiz_report(
-            request.user_full_name,
-            request.topic_title,
-            request.results,
-            request.score,
-            request.total
+            user.full_name,
+            topic.title,
+            results,
+            attempt.correct_answers,
+            attempt.total_questions
         )
         return FileResponse(
             filepath, 
             media_type="application/pdf", 
-            filename=f"Natija_{request.topic_title}.pdf"
+            filename=f"Natija_{topic.title}.pdf"
         )
     except Exception as e:
         print(f"PDF Generation Error: {e}")
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"PDF yaratishda xatolik yuz berdi: {str(e)}")
+
+@router.get("/history/{user_id}")
+async def get_quiz_history(user_id: int, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(
+        select(QuizAttempt)
+        .where(QuizAttempt.student_user_id == user_id)
+        .order_by(QuizAttempt.started_at.desc())
+    )
+    attempts = result.scalars().all()
+    
+    output = []
+    for a in attempts:
+        topic_res = await db.execute(select(Topic).where(Topic.id == a.topic_id))
+        topic = topic_res.scalar_one_or_none()
+        output.append({
+            "id": a.id,
+            "topic_title": topic.title if topic else "O'chirilgan mavzu",
+            "score": a.correct_answers,
+            "total": a.total_questions,
+            "date": a.started_at.isoformat()
+        })
+    return output

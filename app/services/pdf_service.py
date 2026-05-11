@@ -50,24 +50,32 @@ class PDFService:
             question_text = self._clean_text(item['question'])
             pdf.multi_cell(0, 7, f"{i}. {question_text}")
             
-            pdf.set_font("Helvetica", "", 10)
-            for opt, text in item['options'].items():
-                text = self._clean_text(text)
-                prefix = ""
-                if opt == item['user_answer']:
-                    prefix = "[X] " if item['user_answer'] == item['correct_option'] else "[!] "
-                elif opt == item['correct_option']:
-                    prefix = "(*) "
-                else:
-                    prefix = "    "
-                
-                pdf.cell(0, 6, f"{prefix} {opt}: {text}", ln=True)
+            # Options (if available)
+            if 'options' in item and isinstance(item['options'], dict):
+                pdf.set_font("Helvetica", "", 10)
+                for opt, text in item['options'].items():
+                    text = self._clean_text(text)
+                    prefix = ""
+                    if opt == item['user_answer']:
+                        prefix = "[X] " if item['user_answer'] == item['correct_option'] else "[!] "
+                    elif opt == item['correct_option']:
+                        prefix = "(*) "
+                    else:
+                        prefix = "    "
+                    pdf.cell(0, 6, f"{prefix} {opt}: {text}", ln=True)
+            else:
+                # Basic result for history
+                pdf.set_font("Helvetica", "", 10)
+                pdf.cell(0, 6, f"To'g'ri javob: {item['correct_option']}", ln=True)
+                pdf.cell(0, 6, f"Sizning javobingiz: {item['user_answer']}", ln=True)
             
-            pdf.set_font("Helvetica", "I", 9)
-            pdf.set_text_color(100, 100, 100)
-            explanation_text = self._clean_text(item['explanation'])
-            pdf.multi_cell(0, 6, f"Izoh: {explanation_text}")
-            pdf.set_text_color(0, 0, 0)
+            # Explanation (if available)
+            if 'explanation' in item and item['explanation']:
+                pdf.set_font("Helvetica", "I", 9)
+                pdf.set_text_color(100, 100, 100)
+                explanation_text = self._clean_text(item['explanation'])
+                pdf.multi_cell(0, 6, f"Izoh: {explanation_text}")
+                pdf.set_text_color(0, 0, 0)
             pdf.ln(5)
             
             if pdf.get_y() > 250:
