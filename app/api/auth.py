@@ -8,7 +8,7 @@ from jose import jwt
 from datetime import datetime, timedelta
 import os
 
-router = APIRouter()
+router = APIRouter(redirect_slashes=True)
 
 SECRET_KEY = os.getenv("SECRET_KEY", "your-secret-key")
 ALGORITHM = "HS256"

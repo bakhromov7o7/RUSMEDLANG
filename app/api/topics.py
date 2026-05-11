@@ -7,7 +7,7 @@ from pydantic import BaseModel
 from typing import Optional, List
 from datetime import datetime
 
-router = APIRouter()
+router = APIRouter(redirect_slashes=True)
 
 class TopicCreateRequest(BaseModel):
     employee_id: int
