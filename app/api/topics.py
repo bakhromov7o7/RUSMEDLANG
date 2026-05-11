@@ -33,46 +33,45 @@ async def create_topic(req: TopicCreateRequest, db: AsyncSession = Depends(get_d
         # 2. Create Topic
         topic = Topic(
             employee_user_id=employee.id,
-        title=req.title,
-        description=req.description,
-        status=TopicStatus.active
-    )
-    db.add(topic)
-    await db.flush()
-
-    # 3. Add Video Material if exists
-    if req.video_url:
-        video_material = TopicMaterial(
-            topic_id=topic.id,
-            uploaded_by_user_id=req.employee_id,
-            material_type=MaterialType.video,
-            title=f"{req.title} - Video",
-            source_url=req.video_url
+            title=req.title,
+            description=req.description,
+            status=TopicStatus.active
         )
-        db.add(video_material)
+        db.add(topic)
+        await db.flush()
 
-    # 4. Add Text Material
-    text_material = TopicMaterial(
-        topic_id=topic.id,
-        uploaded_by_user_id=req.employee_id,
-        material_type=MaterialType.text,
-        title=f"{req.title} - Content",
-        raw_text=req.content
-    )
-    db.add(text_material)
-    await db.flush()
+        # 3. Add Video Material if exists
+        if req.video_url:
+            video_material = TopicMaterial(
+                topic_id=topic.id,
+                uploaded_by_user_id=employee.id,
+                material_type=MaterialType.video,
+                title=f"{req.title} - Video",
+                source_url=req.video_url
+            )
+            db.add(video_material)
 
-    # 5. Chunk the content into KnowledgeChunks
-    # For now, a simple paragraph-based chunker
-    paragraphs = [p.strip() for p in req.content.split("\n\n") if p.strip()]
-    for i, p in enumerate(paragraphs):
-        chunk = KnowledgeChunk(
+        # 4. Add Text Material
+        text_material = TopicMaterial(
             topic_id=topic.id,
-            material_id=text_material.id,
-            chunk_index=i,
-            chunk_text=p
+            uploaded_by_user_id=employee.id,
+            material_type=MaterialType.text,
+            title=f"{req.title} - Content",
+            raw_text=req.content
         )
-        db.add(chunk)
+        db.add(text_material)
+        await db.flush()
+
+        # 5. Chunk the content into KnowledgeChunks
+        paragraphs = [p.strip() for p in req.content.split("\n\n") if p.strip()]
+        for i, p in enumerate(paragraphs):
+            chunk = KnowledgeChunk(
+                topic_id=topic.id,
+                material_id=text_material.id,
+                chunk_index=i,
+                chunk_text=p
+            )
+            db.add(chunk)
 
         await db.commit()
     except Exception as e:
