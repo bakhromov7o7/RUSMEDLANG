@@ -91,7 +91,7 @@ async def list_topics(db: AsyncSession = Depends(get_db)):
             "id": t.id,
             "title": t.title,
             "description": t.description,
-            "status": t.status.value,
+            "status": t.status.value if t.status else "draft",
             "video_url": video.source_url if video else None,
             "content": text.raw_text if text else ""
         })
