@@ -30,6 +30,17 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    logging.info(f"Incoming request: {request.method} {request.url.path}")
+    try:
+        response = await call_next(request)
+        logging.info(f"Response status: {response.status_code}")
+        return response
+    except Exception as e:
+        logging.error(f"Request failed: {e}")
+        raise e
+
 @app.on_event("startup")
 async def startup_event():
     # Create tables if they don't exist
