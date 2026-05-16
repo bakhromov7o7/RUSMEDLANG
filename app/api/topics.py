@@ -18,9 +18,9 @@ class TopicCreateRequest(BaseModel):
 
 @router.post("/")
 async def create_topic(req: TopicCreateRequest, db: AsyncSession = Depends(get_db)):
-    # 1. Verify employee (check both internal ID and telegram_user_id to be safe)
+    # 1. Verify employee
     result = await db.execute(
-        select(User).where((User.id == req.employee_id) | (User.telegram_user_id == req.employee_id))
+        select(User).where(User.id == req.employee_id)
     )
     employee = result.scalar_one_or_none()
     if not employee:

@@ -51,12 +51,12 @@ async def startup_event():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     
-    # Start Telegram Bot properly
-    bot_app = create_bot_application()
-    await bot_app.initialize()
-    await bot_app.start()
-    await bot_app.updater.start_polling()
-    print("Telegram bot started.")
+    # Start Telegram Bot (Disabled as requested)
+    # bot_app = create_bot_application()
+    # await bot_app.initialize()
+    # await bot_app.start()
+    # await bot_app.updater.start_polling()
+    # print("Telegram bot started.")
 
 @app.get("/")
 async def root():
