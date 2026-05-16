@@ -68,6 +68,6 @@ class AIService:
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": f"Berilgan matn asosida {count} ta akademik test savollarini JSON formatida tayyorlang."}
             ],
-            response_format={ "type": "json_object" } if "gpt-4" in self.model else None
+            response_format={ "type": "json_object" } if ("gpt-4" in self.model or "llama" in self.model or "mixtral" in self.model) else None
         )
         return response.choices[0].message.content
