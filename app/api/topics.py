@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from app.database import get_db
-from app.models import Topic, TopicMaterial, KnowledgeChunk, User, MaterialType, TopicStatus
+from app.models import Topic, TopicMaterial, KnowledgeChunk, User, MaterialType, TopicStatus, UserRole
 from pydantic import BaseModel
 from typing import Optional, List
 from datetime import datetime

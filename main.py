@@ -1,6 +1,10 @@
 import asyncio
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from dotenv import load_dotenv
+import os
+
+load_dotenv()
 from app.bot.bot import create_bot_application
 from app.database import engine, Base
 
