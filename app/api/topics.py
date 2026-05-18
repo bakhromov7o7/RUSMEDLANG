@@ -14,6 +14,7 @@ from app.models import (
     UserRole,
     StudentSession,
     SessionState,
+    TopicQuestionLog,
 )
 from app.services.ai_service import AIService
 from pydantic import BaseModel
@@ -207,6 +208,15 @@ async def ask_topic(topic_id: int, req: TopicAskRequest, db: AsyncSession = Depe
         session.last_user_message = question
         used = session.question_count
         remaining = max(QUESTION_LIMIT - session.question_count, 0)
+        db.add(
+            TopicQuestionLog(
+                student_user_id=req.user_id,
+                topic_id=topic.id,
+                question_text=question,
+                answer_text=answer,
+                language=req.language,
+            )
+        )
         await db.commit()
 
     return {

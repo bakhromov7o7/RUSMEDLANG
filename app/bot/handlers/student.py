@@ -1,6 +1,6 @@
 from telegram import Update
 from telegram.ext import ContextTypes
-from app.models import User, Topic, UserRole, TopicStatus, StudentTopicAccess, UserState
+from app.models import User, Topic, UserRole, TopicStatus, StudentTopicAccess, UserState, TopicQuestionLog
 from sqlalchemy import select
 from app.database import AsyncSessionLocal
 from app.bot.keyboards import get_topic_actions_keyboard
@@ -62,4 +62,12 @@ async def handle_student_ai_query(update: Update, context: ContextTypes.DEFAULT_
         # For MVP, we'll just use a generic context or get chunks later
         # In full version, we'd query KnowledgeChunk here
         response = await ai_service.get_response("Generic context about the topic", text, state.preferred_language)
+        session.add(TopicQuestionLog(
+            student_user_id=user.id,
+            topic_id=state.active_topic_id,
+            question_text=text,
+            answer_text=response,
+            language=state.preferred_language,
+        ))
+        await session.commit()
         await update.message.reply_text(response)

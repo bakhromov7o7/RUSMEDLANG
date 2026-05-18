@@ -1,4 +1,5 @@
 import json
+from datetime import datetime, timedelta
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -8,7 +9,7 @@ from app.models import Topic, KnowledgeChunk, User
 from app.services.ai_service import AIService
 from app.services.pdf_service import PDFService
 from pydantic import BaseModel
-from typing import List, Dict
+from typing import List, Dict, Optional
 
 router = APIRouter()
 ai_service = AIService()
@@ -22,6 +23,7 @@ class QuizSubmitRequest(BaseModel):
     topic_id: int
     user_id: int
     answers: List[Dict] # List of {question_id: str, selected_option: str}
+    elapsed_seconds: Optional[int] = None
 
 @router.post("/generate")
 async def generate_quiz(request: QuizStartRequest, db: AsyncSession = Depends(get_db)):
@@ -73,12 +75,18 @@ async def submit_quiz(req: QuizSubmitRequest, db: AsyncSession = Depends(get_db)
         raise HTTPException(status_code=404, detail="Topic not found")
     
     # 2. Create QuizAttempt
+    finished_at = datetime.utcnow()
+    elapsed_seconds = max(req.elapsed_seconds or 0, 0)
+    started_at = finished_at - timedelta(seconds=elapsed_seconds) if elapsed_seconds else finished_at
+
     attempt = QuizAttempt(
         student_user_id=req.user_id,
         topic_id=req.topic_id,
         employee_user_id=topic.employee_user_id,
         total_questions=len(req.answers),
-        correct_answers=0
+        correct_answers=0,
+        started_at=started_at,
+        finished_at=finished_at
     )
     db.add(attempt)
     await db.flush()
@@ -94,14 +102,21 @@ async def submit_quiz(req: QuizSubmitRequest, db: AsyncSession = Depends(get_db)
             question_text=ans.get('question', ''),
             expected_answer=ans.get('correct_option', ''),
             student_answer=ans.get('user_answer', ''),
-            is_correct=is_correct
+            is_correct=is_correct,
+            feedback_text=ans.get('explanation', ''),
+            checked_at=finished_at
         )
         db.add(q)
     
     attempt.correct_answers = correct_count
     await db.commit()
     
-    return {"status": "success", "attempt_id": attempt.id, "score": correct_count}
+    return {
+        "status": "success",
+        "attempt_id": attempt.id,
+        "score": correct_count,
+        "elapsed_seconds": elapsed_seconds
+    }
 
 @router.get("/report/pdf")
 async def get_pdf_report_by_id(attempt_id: int, db: AsyncSession = Depends(get_db)):
@@ -170,6 +185,59 @@ async def get_quiz_history(user_id: int, db: AsyncSession = Depends(get_db)):
             "topic_title": topic.title if topic else "O'chirilgan mavzu",
             "score": a.correct_answers,
             "total": a.total_questions,
-            "date": a.started_at.isoformat()
+            "date": a.started_at.isoformat(),
+            "finished_at": a.finished_at.isoformat() if a.finished_at else None,
+            "duration_seconds": _duration_seconds(a)
         })
     return output
+
+@router.get("/attempt/{attempt_id}")
+async def get_quiz_attempt(attempt_id: int, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(QuizAttempt).where(QuizAttempt.id == attempt_id))
+    attempt = result.scalar_one_or_none()
+    if not attempt:
+        raise HTTPException(status_code=404, detail="Attempt not found")
+
+    topic_res = await db.execute(select(Topic).where(Topic.id == attempt.topic_id))
+    topic = topic_res.scalar_one_or_none()
+
+    user_res = await db.execute(select(User).where(User.id == attempt.student_user_id))
+    user = user_res.scalar_one_or_none()
+
+    questions_res = await db.execute(
+        select(QuizQuestion)
+        .where(QuizQuestion.quiz_attempt_id == attempt_id)
+        .order_by(QuizQuestion.question_order)
+    )
+    questions = questions_res.scalars().all()
+
+    return {
+        "id": attempt.id,
+        "student": {
+            "id": user.id if user else attempt.student_user_id,
+            "full_name": user.full_name if user else "Noma'lum student",
+            "username": user.username if user else None,
+        },
+        "topic_id": attempt.topic_id,
+        "topic_title": topic.title if topic else "O'chirilgan mavzu",
+        "score": attempt.correct_answers,
+        "total": attempt.total_questions,
+        "date": attempt.started_at.isoformat(),
+        "finished_at": attempt.finished_at.isoformat() if attempt.finished_at else None,
+        "duration_seconds": _duration_seconds(attempt),
+        "results": [
+            {
+                "question": q.question_text,
+                "correct_option": q.expected_answer,
+                "user_answer": q.student_answer,
+                "is_correct": q.is_correct,
+                "explanation": q.feedback_text or "",
+            }
+            for q in questions
+        ],
+    }
+
+def _duration_seconds(attempt: QuizAttempt) -> Optional[int]:
+    if not attempt.started_at or not attempt.finished_at:
+        return None
+    return max(int((attempt.finished_at - attempt.started_at).total_seconds()), 0)
