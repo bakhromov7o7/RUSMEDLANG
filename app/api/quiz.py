@@ -16,6 +16,7 @@ pdf_service = PDFService()
 
 class QuizStartRequest(BaseModel):
     topic_id: int
+    language: str = "uz"
 
 class QuizSubmitRequest(BaseModel):
     topic_id: int
@@ -40,7 +41,7 @@ async def generate_quiz(request: QuizStartRequest, db: AsyncSession = Depends(ge
         raise HTTPException(status_code=400, detail="No content available for this topic to generate quiz.")
     
     # 2. Generate Quiz using AI
-    quiz_json_raw = await ai_service.generate_quiz(context)
+    quiz_json_raw = await ai_service.generate_quiz(context, language=request.language)
     try:
         # Clean up JSON if AI returned it with markdown blocks
         if "```json" in quiz_json_raw:

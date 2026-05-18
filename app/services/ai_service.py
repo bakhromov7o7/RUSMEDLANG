@@ -31,10 +31,18 @@ class AIService:
         )
         return response.choices[0].message.content
 
-    async def generate_quiz(self, context: str, count: int = 5):
+    async def generate_quiz(self, context: str, count: int = 5, language: str = "uz"):
+        lang = "ru" if str(language).lower().startswith("ru") else "uz"
+        output_language = "русском языке" if lang == "ru" else "o'zbek tilida"
+        user_instruction = (
+            f"Составьте {count} академических тестовых вопросов на русском языке в JSON формате."
+            if lang == "ru"
+            else f"Berilgan matn asosida {count} ta akademik test savollarini o'zbek tilida JSON formatida tayyorlang."
+        )
         system_prompt = f"""
         Siz universitet darajasidagi professor va ekspertsiz. 
         Quyidagi berilgan matn (Context) asosida studentlar bilimini tekshirish uchun {count} ta murakkab va mantiqiy test savollarini tuzing.
+        Savollar, variantlar va izohlar {output_language} bo'lishi shart.
         
         Xavfsizlik va Sifat qoidalari:
         1. Savollar faqat berilgan matn asosida bo'lishi shart.
@@ -44,19 +52,21 @@ class AIService:
         5. Javoblar formatini FAQAT JSON ko'rinishida qaytaring.
         
         JSON formati misoli:
-        [
-          {{
-            "question": "Savol matni bu yerda...",
-            "options": {{
-              "A": "Variant 1",
-              "B": "Variant 2",
-              "C": "Variant 3",
-              "D": "Variant 4"
-            }},
-            "correct_option": "A",
-            "explanation": "Nima uchun bu javob to'g'riligi haqida qisqacha izoh."
-          }}
-        ]
+        {{
+          "questions": [
+            {{
+              "question": "Savol matni bu yerda...",
+              "options": {{
+                "A": "Variant 1",
+                "B": "Variant 2",
+                "C": "Variant 3",
+                "D": "Variant 4"
+              }},
+              "correct_option": "A",
+              "explanation": "Nima uchun bu javob to'g'riligi haqida qisqacha izoh."
+            }}
+          ]
+        }}
         
         Context:
         {context}
@@ -66,7 +76,7 @@ class AIService:
             model=self.model,
             messages=[
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": f"Berilgan matn asosida {count} ta akademik test savollarini JSON formatida tayyorlang."}
+                {"role": "user", "content": user_instruction}
             ],
             response_format={ "type": "json_object" } if ("gpt-4" in self.model or "llama" in self.model or "mixtral" in self.model) else None
         )
