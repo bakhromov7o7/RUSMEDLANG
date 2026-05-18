@@ -170,17 +170,6 @@ class QuizQuestion(Base):
 
     __table_args__ = (UniqueConstraint('quiz_attempt_id', 'question_order', name='_quiz_question_uc'),)
 
-class TopicQuestionLog(Base):
-    __tablename__ = "topic_question_logs"
-
-    id = Column(BigInteger, primary_key=True)
-    student_user_id = Column(BigInteger, ForeignKey("users.id"), nullable=False)
-    topic_id = Column(BigInteger, ForeignKey("topics.id"), nullable=False)
-    question_text = Column(Text, nullable=False)
-    answer_text = Column(Text)
-    language = Column(String(10), default="uz", nullable=False)
-    created_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
-
 class StudentApplication(Base):
     __tablename__ = "student_applications"
     

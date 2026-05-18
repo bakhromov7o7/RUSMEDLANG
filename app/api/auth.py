@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, text
 from app.database import get_db
 from app.models import (
     User,
@@ -8,7 +8,6 @@ from app.models import (
     QuizAttempt,
     QuizQuestion,
     Topic,
-    TopicQuestionLog,
 )
 from pydantic import BaseModel
 from jose import jwt
@@ -124,25 +123,7 @@ async def student_overview(student_id: int, db: AsyncSession = Depends(get_db)):
             ],
         })
 
-    qa_res = await db.execute(
-        select(TopicQuestionLog)
-        .where(TopicQuestionLog.student_user_id == student_id)
-        .order_by(TopicQuestionLog.created_at.desc())
-    )
-    qa_logs = qa_res.scalars().all()
-
-    qa_items = []
-    for log in qa_logs:
-        topic_res = await db.execute(select(Topic).where(Topic.id == log.topic_id))
-        topic = topic_res.scalar_one_or_none()
-        qa_items.append({
-            "id": log.id,
-            "topic_title": topic.title if topic else "O'chirilgan mavzu",
-            "question": log.question_text,
-            "answer": log.answer_text,
-            "language": log.language,
-            "date": log.created_at.isoformat(),
-        })
+    qa_items = await _load_ai_questions(db, student_id)
 
     total_questions = sum(a.total_questions for a in attempts)
     correct_answers = sum(a.correct_answers for a in attempts)
@@ -169,3 +150,45 @@ def _duration_seconds(attempt: QuizAttempt):
     if not attempt.started_at or not attempt.finished_at:
         return None
     return max(int((attempt.finished_at - attempt.started_at).total_seconds()), 0)
+
+async def _load_ai_questions(db: AsyncSession, student_id: int):
+    try:
+        table_res = await db.execute(text("select to_regclass('public.notification_logs')"))
+        if table_res.scalar_one_or_none() is None:
+            return []
+
+        result = await db.execute(
+            text("""
+                select id, payload, created_at
+                from notification_logs
+                where user_id = :student_id and event_type = 'ai_question'
+                order by created_at desc
+            """),
+            {"student_id": student_id},
+        )
+    except Exception:
+        return []
+
+    import json
+    items = []
+    for row in result.mappings().all():
+        payload = row["payload"] or {}
+        if isinstance(payload, str):
+            try:
+                payload = json.loads(payload)
+            except Exception:
+                payload = {}
+        topic_id = payload.get("topic_id")
+        topic = None
+        if topic_id:
+            topic_res = await db.execute(select(Topic).where(Topic.id == topic_id))
+            topic = topic_res.scalar_one_or_none()
+        items.append({
+            "id": row["id"],
+            "topic_title": topic.title if topic else "Mavzu",
+            "question": payload.get("question", ""),
+            "answer": payload.get("answer", ""),
+            "language": payload.get("language", "uz"),
+            "date": row["created_at"].isoformat(),
+        })
+    return items

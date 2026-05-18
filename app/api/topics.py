@@ -2,7 +2,7 @@ import logging
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, text
 from app.database import get_db
 from app.models import (
     Topic,
@@ -14,7 +14,6 @@ from app.models import (
     UserRole,
     StudentSession,
     SessionState,
-    TopicQuestionLog,
 )
 from app.services.ai_service import AIService
 from pydantic import BaseModel
@@ -208,15 +207,7 @@ async def ask_topic(topic_id: int, req: TopicAskRequest, db: AsyncSession = Depe
         session.last_user_message = question
         used = session.question_count
         remaining = max(QUESTION_LIMIT - session.question_count, 0)
-        db.add(
-            TopicQuestionLog(
-                student_user_id=req.user_id,
-                topic_id=topic.id,
-                question_text=question,
-                answer_text=answer,
-                language=req.language,
-            )
-        )
+        await _log_ai_question(db, req.user_id, topic.id, question, answer, req.language)
         await db.commit()
 
     return {
@@ -225,6 +216,41 @@ async def ask_topic(topic_id: int, req: TopicAskRequest, db: AsyncSession = Depe
         "used": used,
         "remaining": remaining,
     }
+
+async def _log_ai_question(
+    db: AsyncSession,
+    student_user_id: int,
+    topic_id: int,
+    question: str,
+    answer: str,
+    language: str,
+):
+    try:
+        table_res = await db.execute(text("select to_regclass('public.notification_logs')"))
+        if table_res.scalar_one_or_none() is None:
+            return
+        async with db.begin_nested():
+            await db.execute(
+                text("""
+                    insert into notification_logs (user_id, event_type, payload)
+                    values (:user_id, 'ai_question', cast(:payload as jsonb))
+                """),
+                {
+                    "user_id": student_user_id,
+                    "payload": json_dumps({
+                        "topic_id": topic_id,
+                        "question": question,
+                        "answer": answer,
+                        "language": language,
+                    }),
+                },
+            )
+    except Exception:
+        logging.info("AI question log skipped; notification_logs is unavailable", exc_info=True)
+
+def json_dumps(value: dict) -> str:
+    import json
+    return json.dumps(value, ensure_ascii=False)
 
 @router.delete("/{topic_id}")
 async def delete_topic(topic_id: int, db: AsyncSession = Depends(get_db)):
