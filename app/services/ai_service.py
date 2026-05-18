@@ -1,4 +1,5 @@
 import os
+import json
 from openai import OpenAI
 from dotenv import load_dotenv
 
@@ -12,10 +13,37 @@ class AIService:
         )
         self.model = os.getenv("OPENAI_MODEL", "openai/gpt-oss-20b")
 
+    def _language_name(self, language: str) -> str:
+        lang = str(language or "uz").lower()
+        if lang.startswith("ru"):
+            return "rus tilida"
+        if lang.startswith("en"):
+            return "ingliz tilida"
+        return "o'zbek tilida"
+
+    def _json_response_format(self):
+        return (
+            {"type": "json_object"}
+            if (
+                "gpt-4" in self.model
+                or "llama" in self.model
+                or "mixtral" in self.model
+            )
+            else None
+        )
+
+    def _clean_json(self, raw: str) -> str:
+        if "```json" in raw:
+            return raw.split("```json")[1].split("```")[0].strip()
+        if "```" in raw:
+            return raw.split("```")[1].split("```")[0].strip()
+        return raw.strip()
+
     async def get_response(self, context: str, user_query: str, language: str = "uz"):
+        language_name = self._language_name(language)
         system_prompt = f"""
         Siz "Ustoz AI" botisiz. Quyidagi mavzu bo'yicha berilgan context'dan foydalanib student savoliga javob bering.
-        Javobni {language} tilida bering.
+        Javobni {language_name} bering.
         Agar javob context'da bo'lmasa, buni muloyimlik bilan ayting.
         
         Context:
@@ -28,6 +56,63 @@ class AIService:
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_query}
             ]
+        )
+        return response.choices[0].message.content
+
+    async def translate_topic(self, title: str, content: str, language: str = "ru"):
+        lang = str(language or "uz").lower()
+        if not lang.startswith("ru"):
+            return {"title": title, "content": content}
+
+        system_prompt = """
+        Siz professional tarjimonsiz. Berilgan universitet mavzusini rus tiliga aniq tarjima qiling.
+        Ma'noni o'zgartirmang, Markdown tuzilishini saqlang, qo'shimcha izoh yozmang.
+        Faqat valid JSON qaytaring: {"title": "...", "content": "..."}.
+        """
+
+        response = self.client.chat.completions.create(
+            model=self.model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {
+                    "role": "user",
+                    "content": json.dumps(
+                        {"title": title or "", "content": content or ""},
+                        ensure_ascii=False,
+                    ),
+                },
+            ],
+            response_format=self._json_response_format(),
+        )
+
+        raw = response.choices[0].message.content or ""
+        try:
+            data = json.loads(self._clean_json(raw))
+            return {
+                "title": data.get("title") or title,
+                "content": data.get("content") or content,
+            }
+        except Exception:
+            return {"title": title, "content": raw.strip() or content}
+
+    async def answer_topic_question(self, context: str, question: str, language: str = "uz"):
+        language_name = self._language_name(language)
+        system_prompt = f"""
+        Siz "Ustoz AI" o'quv yordamchisisiz.
+        Student savoliga FAQAT quyidagi mavzu contexti asosida javob bering.
+        Savol mavzudan tashqari bo'lsa, qisqa va muloyim rad eting.
+        Javob {language_name} bo'lsin, sodda, tushunarli va 2-5 gapdan oshmasin.
+
+        Context:
+        {context}
+        """
+
+        response = self.client.chat.completions.create(
+            model=self.model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": question},
+            ],
         )
         return response.choices[0].message.content
 
@@ -78,6 +163,6 @@ class AIService:
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_instruction}
             ],
-            response_format={ "type": "json_object" } if ("gpt-4" in self.model or "llama" in self.model or "mixtral" in self.model) else None
+            response_format=self._json_response_format(),
         )
         return response.choices[0].message.content

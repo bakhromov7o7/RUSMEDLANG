@@ -1,13 +1,28 @@
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from app.database import get_db
-from app.models import Topic, TopicMaterial, KnowledgeChunk, User, MaterialType, TopicStatus, UserRole
+from app.models import (
+    Topic,
+    TopicMaterial,
+    KnowledgeChunk,
+    User,
+    MaterialType,
+    TopicStatus,
+    UserRole,
+    StudentSession,
+    SessionState,
+)
+from app.services.ai_service import AIService
 from pydantic import BaseModel
 from typing import Optional, List
 from datetime import datetime
 
 router = APIRouter(redirect_slashes=True)
+ai_service = AIService()
+QUESTION_LIMIT = 5
 
 class TopicCreateRequest(BaseModel):
     employee_id: int
@@ -15,6 +30,11 @@ class TopicCreateRequest(BaseModel):
     description: Optional[str] = ""
     video_url: Optional[str] = ""
     content: str # The main text content
+
+class TopicAskRequest(BaseModel):
+    question: str
+    user_id: Optional[int] = None
+    language: str = "uz"
 
 @router.post("/")
 async def create_topic(req: TopicCreateRequest, db: AsyncSession = Depends(get_db)):
@@ -106,6 +126,95 @@ async def list_topics(db: AsyncSession = Depends(get_db)):
             "content": text.raw_text if text else ""
         })
     return output
+
+async def _topic_content(db: AsyncSession, topic_id: int):
+    result = await db.execute(
+        select(Topic)
+        .options(selectinload(Topic.materials))
+        .where(Topic.id == topic_id)
+    )
+    topic = result.scalar_one_or_none()
+    if not topic:
+        raise HTTPException(status_code=404, detail="Topic not found")
+
+    text = next((m for m in topic.materials if m.material_type == MaterialType.text), None)
+    chunks_result = await db.execute(
+        select(KnowledgeChunk)
+        .where(KnowledgeChunk.topic_id == topic_id)
+        .order_by(KnowledgeChunk.chunk_index)
+        .limit(20)
+    )
+    chunks = chunks_result.scalars().all()
+    content = "\n\n".join([c.chunk_text for c in chunks]) or (text.raw_text if text else "") or topic.description or ""
+    return topic, content
+
+@router.get("/{topic_id}/translation")
+async def translate_topic(topic_id: int, language: str = "ru", db: AsyncSession = Depends(get_db)):
+    topic, content = await _topic_content(db, topic_id)
+    translated = await ai_service.translate_topic(topic.title, content, language)
+    return {
+        "language": language,
+        "title": translated["title"],
+        "content": translated["content"],
+    }
+
+@router.post("/{topic_id}/ask")
+async def ask_topic(topic_id: int, req: TopicAskRequest, db: AsyncSession = Depends(get_db)):
+    question = req.question.strip()
+    if not question:
+        raise HTTPException(status_code=400, detail="Question is required")
+
+    topic, content = await _topic_content(db, topic_id)
+    if not content.strip():
+        raise HTTPException(status_code=400, detail="No content available for this topic.")
+
+    session = None
+    if req.user_id:
+        result = await db.execute(
+            select(StudentSession).where(StudentSession.student_user_id == req.user_id)
+        )
+        session = result.scalar_one_or_none()
+        if not session:
+            session = StudentSession(
+                student_user_id=req.user_id,
+                topic_id=topic.id,
+                state=SessionState.asking,
+                question_count=0,
+            )
+            db.add(session)
+            await db.flush()
+        elif session.topic_id != topic.id:
+            session.topic_id = topic.id
+            session.question_count = 0
+
+        if session.question_count >= QUESTION_LIMIT:
+            raise HTTPException(
+                status_code=429,
+                detail={
+                    "message": "Question limit reached",
+                    "limit": QUESTION_LIMIT,
+                    "remaining": 0,
+                },
+            )
+
+    answer = await ai_service.answer_topic_question(content, question, req.language)
+
+    remaining = QUESTION_LIMIT
+    used = 0
+    if session:
+        session.question_count += 1
+        session.state = SessionState.asking
+        session.last_user_message = question
+        used = session.question_count
+        remaining = max(QUESTION_LIMIT - session.question_count, 0)
+        await db.commit()
+
+    return {
+        "answer": answer,
+        "limit": QUESTION_LIMIT,
+        "used": used,
+        "remaining": remaining,
+    }
 
 @router.delete("/{topic_id}")
 async def delete_topic(topic_id: int, db: AsyncSession = Depends(get_db)):
