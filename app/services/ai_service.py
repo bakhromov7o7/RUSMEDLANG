@@ -1,5 +1,6 @@
 import os
 import json
+import asyncio
 from openai import OpenAI
 from dotenv import load_dotenv
 
@@ -7,10 +8,36 @@ load_dotenv()
 
 class AIService:
     def __init__(self):
-        self.client = OpenAI(
-            base_url=os.getenv("OPENAI_API_BASE", "https://api.groq.com/openai/v1"),
-            api_key=os.getenv("GROQ_API_KEY")
-        )
+        # Collect all keys defined in env matching GROQ_API_KEY or GROQ_API_KEY_*
+        self.api_keys = []
+        primary_key = os.getenv("GROQ_API_KEY")
+        if primary_key:
+            self.api_keys.append(primary_key)
+        
+        # Load additional keys e.g. GROQ_API_KEY_2, GROQ_API_KEY_3...
+        i = 2
+        while True:
+            key = os.getenv(f"GROQ_API_KEY_{i}")
+            if not key:
+                break
+            self.api_keys.append(key)
+            i += 1
+        
+        # Fallback if no keys in env, to prevent crash at init
+        if not self.api_keys:
+            self.api_keys.append("")
+
+        self.current_key_index = 0
+        
+        # Initialize OpenAI client wrappers for each key
+        self.clients = [
+            OpenAI(
+                base_url=os.getenv("OPENAI_API_BASE", "https://api.groq.com/openai/v1"),
+                api_key=k
+            )
+            for k in self.api_keys
+        ]
+        
         self.model = os.getenv("OPENAI_MODEL", "openai/gpt-oss-20b")
 
     def _language_name(self, language: str) -> str:
@@ -39,6 +66,36 @@ class AIService:
             return raw.split("```")[1].split("```")[0].strip()
         return raw.strip()
 
+    async def _execute_completion(self, messages, response_format=None):
+        # Allow retrying each key up to 2 times
+        max_total_retries = len(self.clients) * 2
+        delay = 1.0
+        
+        for attempt in range(max_total_retries):
+            client = self.clients[self.current_key_index]
+            try:
+                # Chat completions is blocking in openai SDK, which is fine since the FastAPI routes are async.
+                response = client.chat.completions.create(
+                    model=self.model,
+                    messages=messages,
+                    response_format=response_format,
+                )
+                return response
+            except Exception as e:
+                # Rotate key immediately on error
+                old_index = self.current_key_index
+                self.current_key_index = (self.current_key_index + 1) % len(self.clients)
+                
+                if attempt == max_total_retries - 1:
+                    raise e
+                
+                print(
+                    f"LLM API Error with key index {old_index} (attempt {attempt + 1}/{max_total_retries}): {e}. "
+                    f"Rotating to key index {self.current_key_index} and retrying in {delay}s..."
+                )
+                await asyncio.sleep(delay)
+                delay = min(delay * 2, 8.0)
+
     async def get_response(self, context: str, user_query: str, language: str = "uz"):
         language_name = self._language_name(language)
         system_prompt = f"""
@@ -50,8 +107,7 @@ class AIService:
         {context}
         """
         
-        response = self.client.chat.completions.create(
-            model=self.model,
+        response = await self._execute_completion(
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_query}
@@ -70,8 +126,7 @@ class AIService:
         Faqat valid JSON qaytaring: {"title": "...", "content": "..."}.
         """
 
-        response = self.client.chat.completions.create(
-            model=self.model,
+        response = await self._execute_completion(
             messages=[
                 {"role": "system", "content": system_prompt},
                 {
@@ -107,8 +162,7 @@ class AIService:
         {context}
         """
 
-        response = self.client.chat.completions.create(
-            model=self.model,
+        response = await self._execute_completion(
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": question},
@@ -156,26 +210,12 @@ class AIService:
         Context:
         {context}
         """
-        
-        import asyncio
-        max_retries = 3
-        delay = 1.0
-        
-        for attempt in range(max_retries):
-            try:
-                response = self.client.chat.completions.create(
-                    model=self.model,
-                    messages=[
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_instruction}
-                    ],
-                    response_format=self._json_response_format(),
-                )
-                return response.choices[0].message.content
-            except Exception as e:
-                if attempt == max_retries - 1:
-                    raise e
-                print(f"LLM API Error (attempt {attempt + 1}/{max_retries}): {e}. Retrying in {delay}s...")
-                await asyncio.sleep(delay)
-                delay *= 2
 
+        response = await self._execute_completion(
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_instruction}
+            ],
+            response_format=self._json_response_format(),
+        )
+        return response.choices[0].message.content

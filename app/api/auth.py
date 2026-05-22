@@ -192,3 +192,50 @@ async def _load_ai_questions(db: AsyncSession, student_id: int):
             "date": row["created_at"].isoformat(),
         })
     return items
+
+from typing import Optional
+
+class StudentCreateRequest(BaseModel):
+    telegram_user_id: int
+    full_name: str
+    username: Optional[str] = None
+    created_by_user_id: Optional[int] = None
+
+@router.post("/students")
+async def create_student(req: StudentCreateRequest, db: AsyncSession = Depends(get_db)):
+    res = await db.execute(select(User).where(User.telegram_user_id == req.telegram_user_id))
+    existing = res.scalar_one_or_none()
+    if existing:
+        raise HTTPException(
+            status_code=400,
+            detail="Bu Telegram ID ga ega student allaqachon mavjud."
+        )
+    
+    try:
+        new_student = User(
+            telegram_user_id=req.telegram_user_id,
+            full_name=req.full_name,
+            username=req.username,
+            role=UserRole.student,
+            created_by_user_id=req.created_by_user_id,
+            is_active=True
+        )
+        db.add(new_student)
+        await db.commit()
+        await db.refresh(new_student)
+        
+        return {
+            "status": "success",
+            "student": {
+                "id": new_student.id,
+                "full_name": new_student.full_name,
+                "username": new_student.username,
+                "telegram_user_id": new_student.telegram_user_id,
+                "role": new_student.role.value,
+                "is_active": new_student.is_active,
+                "created_at": new_student.created_at.isoformat()
+            }
+        }
+    except Exception as e:
+        await db.rollback()
+        raise HTTPException(status_code=500, detail=f"Student yaratishda xatolik yuz berdi: {str(e)}")

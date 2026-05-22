@@ -25,7 +25,7 @@ from datetime import datetime
 router = APIRouter(redirect_slashes=True)
 ai_service = AIService()
 pdf_service = PDFService()
-QUESTION_LIMIT = 5
+QUESTION_LIMIT = 10
 
 class TopicCreateRequest(BaseModel):
     employee_id: int
@@ -211,11 +211,29 @@ async def ask_topic(topic_id: int, req: TopicAskRequest, db: AsyncSession = Depe
             session.topic_id = topic.id
             session.question_count = 0
 
-        if session.question_count >= QUESTION_LIMIT:
+        # Query global questions asked by the user today (Tashkent timezone: GMT+5)
+        try:
+            count_res = await db.execute(
+                text("""
+                    select count(*) 
+                    from notification_logs 
+                    where user_id = :user_id 
+                      and event_type = 'ai_question' 
+                      and created_at >= date_trunc('day', now() at time zone 'Asia/Tashkent')
+                """),
+                {"user_id": req.user_id}
+            )
+            questions_today = count_res.scalar_one_or_none() or 0
+        except Exception as e:
+            logging.error(f"Error querying notification_logs limit: {e}")
+            # Fallback to session-based count if the logs table cannot be queried
+            questions_today = session.question_count
+
+        if questions_today >= QUESTION_LIMIT:
             raise HTTPException(
                 status_code=429,
                 detail={
-                    "message": "Question limit reached",
+                    "message": "Kunlik savollar limiti tugadi (maksimal 10 ta).",
                     "limit": QUESTION_LIMIT,
                     "remaining": 0,
                 },
@@ -229,10 +247,26 @@ async def ask_topic(topic_id: int, req: TopicAskRequest, db: AsyncSession = Depe
         session.question_count += 1
         session.state = SessionState.asking
         session.last_user_message = question
-        used = session.question_count
-        remaining = max(QUESTION_LIMIT - session.question_count, 0)
         await _log_ai_question(db, req.user_id, topic.id, question, answer, req.language)
         await db.commit()
+
+        # Recalculate used and remaining based on global logs
+        try:
+            count_res = await db.execute(
+                text("""
+                    select count(*) 
+                    from notification_logs 
+                    where user_id = :user_id 
+                      and event_type = 'ai_question' 
+                      and created_at >= date_trunc('day', now() at time zone 'Asia/Tashkent')
+                """),
+                {"user_id": req.user_id}
+            )
+            used = count_res.scalar_one_or_none() or 0
+        except Exception:
+            used = session.question_count
+
+        remaining = max(QUESTION_LIMIT - used, 0)
 
     return {
         "answer": answer,
@@ -278,19 +312,52 @@ def json_dumps(value: dict) -> str:
 
 @router.delete("/{topic_id}")
 async def delete_topic(topic_id: int, db: AsyncSession = Depends(get_db)):
-    # Delete chunks first
-    from sqlalchemy import delete
-    await db.execute(delete(KnowledgeChunk).where(KnowledgeChunk.topic_id == topic_id))
-    # Delete materials
-    await db.execute(delete(TopicMaterial).where(TopicMaterial.topic_id == topic_id))
-    # Delete topic
+    from sqlalchemy import delete, update
+    from app.models import StudentTopicAccess, UserState, StudentSession, QuizAttempt, TopicMaterial, KnowledgeChunk
+    
     result = await db.execute(select(Topic).where(Topic.id == topic_id))
     topic = result.scalar_one_or_none()
-    if topic:
+    if not topic:
+        raise HTTPException(status_code=404, detail="Topic not found")
+        
+    try:
+        # Delete related quiz attempts (cascade deletes quiz questions)
+        await db.execute(delete(QuizAttempt).where(QuizAttempt.topic_id == topic_id))
+        
+        # Nullify user state references to this topic
+        await db.execute(
+            update(UserState)
+            .where((UserState.pending_topic_id == topic_id) | (UserState.active_topic_id == topic_id))
+            .values(pending_topic_id=None, active_topic_id=None)
+        )
+        
+        # Nullify student session references to this topic
+        await db.execute(
+            update(StudentSession)
+            .where(StudentSession.topic_id == topic_id)
+            .values(topic_id=None)
+        )
+        
+        # Delete student topic access records
+        await db.execute(delete(StudentTopicAccess).where(StudentTopicAccess.topic_id == topic_id))
+        
+        # Delete knowledge chunks
+        await db.execute(delete(KnowledgeChunk).where(KnowledgeChunk.topic_id == topic_id))
+        
+        # Delete materials
+        await db.execute(delete(TopicMaterial).where(TopicMaterial.topic_id == topic_id))
+        
+        # Delete topic itself
         await db.delete(topic)
         await db.commit()
         return {"status": "deleted"}
-    raise HTTPException(status_code=404, detail="Topic not found")
+    except Exception as e:
+        await db.rollback()
+        logging.error(f"Error deleting topic {topic_id}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Mavzuni o'chirishda xatolik yuz berdi: {str(e)}"
+        )
 
 @router.put("/{topic_id}")
 async def update_topic(topic_id: int, req: TopicCreateRequest, db: AsyncSession = Depends(get_db)):
