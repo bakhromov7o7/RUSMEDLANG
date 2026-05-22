@@ -47,9 +47,17 @@ async def log_requests(request: Request, call_next):
 
 @app.on_event("startup")
 async def startup_event():
-    # Create tables if they don't exist
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+    # Create tables if they don't exist (handled gracefully if DB user has no DDL privileges)
+    try:
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        logging.info("Database tables verified/created successfully.")
+    except Exception as e:
+        logging.warning(
+            f"Could not automatically create/verify tables at startup: {e}. "
+            "This is expected if the production DB user lacks DDL privileges. "
+            "Please ensure table structures are migrated manually via migration scripts."
+        )
     
     # Start Telegram Bot (Disabled as requested)
     # bot_app = create_bot_application()
