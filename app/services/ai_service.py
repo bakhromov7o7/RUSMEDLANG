@@ -157,12 +157,25 @@ class AIService:
         {context}
         """
         
-        response = self.client.chat.completions.create(
-            model=self.model,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_instruction}
-            ],
-            response_format=self._json_response_format(),
-        )
-        return response.choices[0].message.content
+        import asyncio
+        max_retries = 3
+        delay = 1.0
+        
+        for attempt in range(max_retries):
+            try:
+                response = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_instruction}
+                    ],
+                    response_format=self._json_response_format(),
+                )
+                return response.choices[0].message.content
+            except Exception as e:
+                if attempt == max_retries - 1:
+                    raise e
+                print(f"LLM API Error (attempt {attempt + 1}/{max_retries}): {e}. Retrying in {delay}s...")
+                await asyncio.sleep(delay)
+                delay *= 2
+

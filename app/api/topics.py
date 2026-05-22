@@ -1,6 +1,7 @@
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, text
 from app.database import get_db
@@ -16,12 +17,14 @@ from app.models import (
     SessionState,
 )
 from app.services.ai_service import AIService
+from app.services.pdf_service import PDFService
 from pydantic import BaseModel
 from typing import Optional, List
 from datetime import datetime
 
 router = APIRouter(redirect_slashes=True)
 ai_service = AIService()
+pdf_service = PDFService()
 QUESTION_LIMIT = 5
 
 class TopicCreateRequest(BaseModel):
@@ -157,6 +160,27 @@ async def translate_topic(topic_id: int, language: str = "ru", db: AsyncSession 
         "title": translated["title"],
         "content": translated["content"],
     }
+
+@router.get("/{topic_id}/pdf")
+async def get_topic_pdf(topic_id: int, language: str = "uz", db: AsyncSession = Depends(get_db)):
+    try:
+        topic, content = await _topic_content(db, topic_id)
+        title = topic.title
+        
+        if language == "ru":
+            translated = await ai_service.translate_topic(topic.title, content, language)
+            title = translated["title"]
+            content = translated["content"]
+            
+        filepath = pdf_service.generate_topic_pdf(title, content)
+        return FileResponse(
+            filepath, 
+            media_type="application/pdf", 
+            filename=f"Mavzu_{title}.pdf"
+        )
+    except Exception as e:
+        logging.error(f"PDF Generation Error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"PDF yaratishda xatolik yuz berdi: {str(e)}")
 
 @router.post("/{topic_id}/ask")
 async def ask_topic(topic_id: int, req: TopicAskRequest, db: AsyncSession = Depends(get_db)):

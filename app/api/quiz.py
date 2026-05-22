@@ -48,7 +48,21 @@ async def generate_quiz(request: QuizStartRequest, db: AsyncSession = Depends(ge
         raise HTTPException(status_code=400, detail="No content available for this topic to generate quiz.")
     
     # 2. Generate Quiz using AI
-    quiz_json_raw = await ai_service.generate_quiz(context, language=request.language)
+    try:
+        quiz_json_raw = await ai_service.generate_quiz(context, language=request.language)
+    except Exception as e:
+        err_msg = str(e)
+        print(f"AI Generation Error: {e}")
+        if "rate_limit" in err_msg.lower() or "429" in err_msg:
+            raise HTTPException(
+                status_code=429, 
+                detail="Sun'iy intellekt xizmati band (Rate Limit). Iltimos, bir ozdan so'ng qayta urinib ko'ring."
+            )
+        raise HTTPException(
+            status_code=502,
+            detail=f"Sun'iy intellektdan javob olishda xatolik yuz berdi: {err_msg}"
+        )
+
     try:
         # Clean up JSON if AI returned it with markdown blocks
         if "```json" in quiz_json_raw:
@@ -57,17 +71,44 @@ async def generate_quiz(request: QuizStartRequest, db: AsyncSession = Depends(ge
             quiz_json_raw = quiz_json_raw.split("```")[1].split("```")[0].strip()
             
         quiz_data = json.loads(quiz_json_raw)
-        # If AI returned an object with a key (like "questions"), unwrap it
+        
+        # Robust unwrapping if AI returned an object instead of a direct list
         if isinstance(quiz_data, dict):
-            for key in ["questions", "quiz", "test"]:
-                if key in quiz_data:
-                    quiz_data = quiz_data[key]
+            found_list = None
+            # 1. Search for standard keys
+            for key in ["questions", "quiz", "test", "savollar", "savol"]:
+                if key in quiz_data and isinstance(quiz_data[key], list):
+                    found_list = quiz_data[key]
                     break
+            
+            # 2. Search for any key holding a list of dicts/questions
+            if found_list is None:
+                for key, val in quiz_data.items():
+                    if isinstance(val, list) and len(val) > 0 and isinstance(val[0], dict):
+                        found_list = val
+                        break
+            
+            # 3. If it's a dict containing questions as values (e.g. {"1": {...}, "2": {...}})
+            if found_list is None:
+                vals = list(quiz_data.values())
+                if len(vals) > 0 and isinstance(vals[0], dict) and ("question" in vals[0] or "options" in vals[0]):
+                    found_list = vals
+            
+            if found_list is not None:
+                quiz_data = found_list
+                
+        if not isinstance(quiz_data, list):
+            raise ValueError("Parsed JSON is not a list of questions.")
+            
         return quiz_data
     except Exception as e:
         print(f"JSON Parse Error: {e}")
         print(f"Raw AI Output: {quiz_json_raw}")
-        raise HTTPException(status_code=500, detail="Failed to parse AI generated quiz.")
+        raise HTTPException(
+            status_code=422, 
+            detail=f"Test savollarini o'qishda (JSON parse) xatolik yuz berdi: {str(e)}"
+        )
+
 
 from app.models import QuizAttempt, QuizQuestion
 
