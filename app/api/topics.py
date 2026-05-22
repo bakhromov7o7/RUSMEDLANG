@@ -15,6 +15,7 @@ from app.models import (
     UserRole,
     StudentSession,
     SessionState,
+    Subject,
 )
 from app.services.ai_service import AIService
 from app.services.pdf_service import PDFService
@@ -29,10 +30,15 @@ QUESTION_LIMIT = 10
 
 class TopicCreateRequest(BaseModel):
     employee_id: int
+    subject_id: Optional[int] = None
     title: str
     description: Optional[str] = ""
     video_url: Optional[str] = ""
     content: str # The main text content
+
+class SubjectCreateRequest(BaseModel):
+    title: str
+    description: Optional[str] = ""
 
 class TopicAskRequest(BaseModel):
     question: str
@@ -56,6 +62,7 @@ async def create_topic(req: TopicCreateRequest, db: AsyncSession = Depends(get_d
         # 2. Create Topic
         topic = Topic(
             employee_user_id=employee.id,
+            subject_id=req.subject_id,
             title=req.title,
             description=req.description,
             status=TopicStatus.active
@@ -107,12 +114,11 @@ async def create_topic(req: TopicCreateRequest, db: AsyncSession = Depends(get_d
 from sqlalchemy.orm import selectinload
 
 @router.get("/")
-async def list_topics(db: AsyncSession = Depends(get_db)):
-    result = await db.execute(
-        select(Topic)
-        .options(selectinload(Topic.materials))
-        .order_by(Topic.created_at.desc())
-    )
+async def list_topics(subject_id: Optional[int] = None, db: AsyncSession = Depends(get_db)):
+    stmt = select(Topic).options(selectinload(Topic.materials))
+    if subject_id:
+        stmt = stmt.where(Topic.subject_id == subject_id)
+    result = await db.execute(stmt.order_by(Topic.created_at.desc()))
     topics = result.scalars().all()
     
     # Manually serialize to include materials source_url and content
@@ -122,6 +128,7 @@ async def list_topics(db: AsyncSession = Depends(get_db)):
         text = next((m for m in t.materials if m.material_type == MaterialType.text), None)
         output.append({
             "id": t.id,
+            "subject_id": t.subject_id,
             "title": t.title,
             "description": t.description,
             "status": t.status.value if t.status else "draft",
@@ -129,6 +136,46 @@ async def list_topics(db: AsyncSession = Depends(get_db)):
             "content": text.raw_text if text else ""
         })
     return output
+
+@router.get("/subjects")
+async def list_subjects(db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(Subject).order_by(Subject.title))
+    subjects = result.scalars().all()
+    return [
+        {
+            "id": s.id,
+            "title": s.title,
+            "description": s.description or "",
+            "created_at": s.created_at.isoformat()
+        }
+        for s in subjects
+    ]
+
+@router.post("/subjects")
+async def create_subject(req: SubjectCreateRequest, db: AsyncSession = Depends(get_db)):
+    res = await db.execute(select(Subject).where(Subject.title == req.title))
+    if res.scalar_one_or_none():
+        raise HTTPException(status_code=400, detail="Bunday fan allaqachon mavjud.")
+        
+    try:
+        subject = Subject(
+            title=req.title,
+            description=req.description
+        )
+        db.add(subject)
+        await db.commit()
+        await db.refresh(subject)
+        return {
+            "status": "success",
+            "subject": {
+                "id": subject.id,
+                "title": subject.title,
+                "description": subject.description
+            }
+        }
+    except Exception as e:
+        await db.rollback()
+        raise HTTPException(status_code=500, detail=f"Fan yaratishda xatolik yuz berdi: {str(e)}")
 
 async def _topic_content(db: AsyncSession, topic_id: int):
     result = await db.execute(
@@ -370,6 +417,7 @@ async def update_topic(topic_id: int, req: TopicCreateRequest, db: AsyncSession 
     # 2. Update Topic fields
     topic.title = req.title
     topic.description = req.description
+    topic.subject_id = req.subject_id
     
     # 3. Update Video Material
     from sqlalchemy import delete

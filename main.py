@@ -62,8 +62,18 @@ async def startup_event():
 async def root():
     return {"message": "Ustoz AI API is running"}
 
-from app.api import auth, topics, quiz
+from fastapi.staticfiles import StaticFiles
+import os
+
+# Ensure uploads directory exists
+os.makedirs("uploads", exist_ok=True)
+
+# Mount static files for homework images
+app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
+
+from app.api import auth, topics, quiz, homework
 
 app.include_router(auth.router, prefix="/api/auth", tags=["Authentication"])
 app.include_router(topics.router, prefix="/api/topics", tags=["Topics"])
 app.include_router(quiz.router, prefix="/api/quiz", tags=["Quiz"])
+app.include_router(homework.router, prefix="/api/homework", tags=["Homework"])

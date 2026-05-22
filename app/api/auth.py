@@ -72,6 +72,12 @@ async def list_students(db: AsyncSession = Depends(get_db)):
             "full_name": student.full_name,
             "username": student.username,
             "is_active": student.is_active,
+            "phone_number": student.phone_number,
+            "student_group": student.student_group,
+            "parent_name": student.parent_name,
+            "parent_phone": student.parent_phone,
+            "birth_date": student.birth_date,
+            "notes": student.notes,
             "created_at": student.created_at.isoformat(),
             "attempts_count": total_attempts,
             "questions_count": total_questions,
@@ -134,6 +140,12 @@ async def student_overview(student_id: int, db: AsyncSession = Depends(get_db)):
             "username": student.username,
             "role": student.role.value,
             "is_active": student.is_active,
+            "phone_number": student.phone_number,
+            "student_group": student.student_group,
+            "parent_name": student.parent_name,
+            "parent_phone": student.parent_phone,
+            "birth_date": student.birth_date,
+            "notes": student.notes,
             "created_at": student.created_at.isoformat(),
         },
         "summary": {
@@ -200,6 +212,12 @@ class StudentCreateRequest(BaseModel):
     full_name: str
     username: Optional[str] = None
     created_by_user_id: Optional[int] = None
+    phone_number: Optional[str] = None
+    student_group: Optional[str] = None
+    parent_name: Optional[str] = None
+    parent_phone: Optional[str] = None
+    birth_date: Optional[str] = None
+    notes: Optional[str] = None
 
 @router.post("/students")
 async def create_student(req: StudentCreateRequest, db: AsyncSession = Depends(get_db)):
@@ -218,6 +236,12 @@ async def create_student(req: StudentCreateRequest, db: AsyncSession = Depends(g
             username=req.username,
             role=UserRole.student,
             created_by_user_id=req.created_by_user_id,
+            phone_number=req.phone_number,
+            student_group=req.student_group,
+            parent_name=req.parent_name,
+            parent_phone=req.parent_phone,
+            birth_date=req.birth_date,
+            notes=req.notes,
             is_active=True
         )
         db.add(new_student)
@@ -233,6 +257,12 @@ async def create_student(req: StudentCreateRequest, db: AsyncSession = Depends(g
                 "telegram_user_id": new_student.telegram_user_id,
                 "role": new_student.role.value,
                 "is_active": new_student.is_active,
+                "phone_number": new_student.phone_number,
+                "student_group": new_student.student_group,
+                "parent_name": new_student.parent_name,
+                "parent_phone": new_student.parent_phone,
+                "birth_date": new_student.birth_date,
+                "notes": new_student.notes,
                 "created_at": new_student.created_at.isoformat()
             }
         }

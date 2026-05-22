@@ -46,6 +46,12 @@ class User(Base):
     role = Column(Enum(UserRole, name="user_role"), nullable=False)
     created_by_user_id = Column(BigInteger, ForeignKey("users.id"))
     is_active = Column(Boolean, default=True, nullable=False)
+    phone_number = Column(String(50))
+    student_group = Column(String(100))
+    parent_name = Column(String(255))
+    parent_phone = Column(String(50))
+    birth_date = Column(String(100))
+    notes = Column(Text)
     created_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 
@@ -54,11 +60,22 @@ class User(Base):
     state = relationship("UserState", back_populates="user", uselist=False)
     session = relationship("StudentSession", back_populates="student", uselist=False)
 
+class Subject(Base):
+    __tablename__ = "subjects"
+    
+    id = Column(BigInteger, primary_key=True)
+    title = Column(String(255), nullable=False, unique=True)
+    description = Column(Text)
+    created_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
+    
+    topics = relationship("Topic", back_populates="subject", cascade="all, delete-orphan")
+
 class Topic(Base):
     __tablename__ = "topics"
     
     id = Column(BigInteger, primary_key=True)
     employee_user_id = Column(BigInteger, ForeignKey("users.id"), nullable=False)
+    subject_id = Column(BigInteger, ForeignKey("subjects.id", ondelete="CASCADE"), nullable=True)
     title = Column(String(255), nullable=False)
     description = Column(Text)
     status = Column(Enum(TopicStatus, name="topic_status"), default=TopicStatus.draft, nullable=False)
@@ -66,6 +83,7 @@ class Topic(Base):
     updated_at = Column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 
     employee = relationship("User", back_populates="topics")
+    subject = relationship("Subject", back_populates="topics")
     materials = relationship("TopicMaterial", back_populates="topic")
     chunks = relationship("KnowledgeChunk", back_populates="topic")
 
@@ -181,3 +199,18 @@ class StudentApplication(Base):
     reviewed_by_user_id = Column(BigInteger, ForeignKey("users.id"))
     created_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
     reviewed_at = Column(DateTime(timezone=True))
+
+class Homework(Base):
+    __tablename__ = "homeworks"
+    
+    id = Column(BigInteger, primary_key=True)
+    title = Column(String(255))
+    text = Column(Text)
+    link = Column(Text)
+    image_path = Column(Text)
+    created_by_user_id = Column(BigInteger, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    student_user_id = Column(BigInteger, ForeignKey("users.id", ondelete="CASCADE"), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
+    
+    created_by = relationship("User", foreign_keys=[created_by_user_id])
+    student = relationship("User", foreign_keys=[student_user_id])
