@@ -91,3 +91,29 @@ async def list_homeworks(student_user_id: Optional[int] = None, db: AsyncSession
         }
         for hw in homeworks
     ]
+
+@router.delete("/{homework_id}")
+async def delete_homework(homework_id: int, db: AsyncSession = Depends(get_db)):
+    stmt = select(Homework).where(Homework.id == homework_id)
+    result = await db.execute(stmt)
+    homework = result.scalar_one_or_none()
+    if not homework:
+        raise HTTPException(status_code=404, detail="Vazifa topilmadi")
+    
+    # Safely delete image file from server if it exists
+    if homework.image_path:
+        filename = homework.image_path.replace("/uploads/", "")
+        filepath = os.path.join(UPLOAD_DIR, filename)
+        if os.path.exists(filepath):
+            try:
+                os.remove(filepath)
+            except Exception:
+                pass
+                
+    try:
+        await db.delete(homework)
+        await db.commit()
+        return {"status": "success", "message": "Vazifa muvaffaqiyatli o'chirildi"}
+    except Exception as e:
+        await db.rollback()
+        raise HTTPException(status_code=500, detail=f"O'chirishda xatolik yuz berdi: {str(e)}")
