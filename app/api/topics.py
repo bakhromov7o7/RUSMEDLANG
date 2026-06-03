@@ -36,7 +36,9 @@ class TopicCreateRequest(BaseModel):
     video_url: Optional[str] = ""
     video_urls: Optional[List[str]] = []
     topic_type: Optional[str] = "leksika"
-    content: str # The main text content
+    content: Optional[str] = ""  # The main text content (legacy)
+    leksika_content: Optional[str] = ""
+    grammatika_content: Optional[str] = ""
 
 class SubjectCreateRequest(BaseModel):
     title: str
@@ -89,27 +91,38 @@ async def create_topic(req: TopicCreateRequest, db: AsyncSession = Depends(get_d
                 )
                 db.add(video_material)
 
-        # 4. Add Text Material
-        text_material = TopicMaterial(
-            topic_id=topic.id,
-            uploaded_by_user_id=employee.id,
-            material_type=MaterialType.text,
-            title=f"{req.title} - Content",
-            raw_text=req.content
-        )
-        db.add(text_material)
-        await db.flush()
+        # 4. Add Text Materials (Leksika & Grammatika)
+        leksika_content = req.leksika_content or ""
+        grammatika_content = req.grammatika_content or ""
+        if not leksika_content and not grammatika_content and req.content:
+            leksika_content = req.content
 
-        # 5. Chunk the content into KnowledgeChunks
-        paragraphs = [p.strip() for p in req.content.split("\n\n") if p.strip()]
-        for i, p in enumerate(paragraphs):
-            chunk = KnowledgeChunk(
+        async def add_text_material(title: str, text: str):
+            if not text.strip():
+                return
+            mat = TopicMaterial(
                 topic_id=topic.id,
-                material_id=text_material.id,
-                chunk_index=i,
-                chunk_text=p
+                uploaded_by_user_id=employee.id,
+                material_type=MaterialType.text,
+                title=title,
+                raw_text=text.strip()
             )
-            db.add(chunk)
+            db.add(mat)
+            await db.flush()
+
+            # Chunk paragraphs into KnowledgeChunks
+            paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
+            for i, p in enumerate(paragraphs):
+                chunk = KnowledgeChunk(
+                    topic_id=topic.id,
+                    material_id=mat.id,
+                    chunk_index=i,
+                    chunk_text=p
+                )
+                db.add(chunk)
+
+        await add_text_material("Leksika", leksika_content)
+        await add_text_material("Grammatika", grammatika_content)
 
         await db.commit()
     except Exception as e:
@@ -134,7 +147,18 @@ async def list_topics(subject_id: Optional[int] = None, db: AsyncSession = Depen
     for t in topics:
         video_materials = [m for m in t.materials if m.material_type == MaterialType.video]
         video_urls = [v.source_url for v in video_materials if v.source_url]
-        text = next((m for m in t.materials if m.material_type == MaterialType.text), None)
+        
+        leksika_text = next((m for m in t.materials if m.material_type == MaterialType.text and m.title == "Leksika"), None)
+        grammatika_text = next((m for m in t.materials if m.material_type == MaterialType.text and m.title == "Grammatika"), None)
+        
+        if not leksika_text and not grammatika_text:
+            legacy_text = next((m for m in t.materials if m.material_type == MaterialType.text), None)
+            if legacy_text:
+                leksika_text = legacy_text
+                
+        leksika_content = leksika_text.raw_text if leksika_text else ""
+        grammatika_content = grammatika_text.raw_text if grammatika_text else ""
+        
         output.append({
             "id": t.id,
             "subject_id": t.subject_id,
@@ -144,7 +168,9 @@ async def list_topics(subject_id: Optional[int] = None, db: AsyncSession = Depen
             "status": t.status.value if t.status else "draft",
             "video_url": video_urls[0] if video_urls else None,
             "video_urls": video_urls,
-            "content": text.raw_text if text else ""
+            "leksika_content": leksika_content,
+            "grammatika_content": grammatika_content,
+            "content": leksika_content or grammatika_content or ""
         })
     return output
 
@@ -198,25 +224,66 @@ async def _topic_content(db: AsyncSession, topic_id: int):
     if not topic:
         raise HTTPException(status_code=404, detail="Topic not found")
 
-    text = next((m for m in topic.materials if m.material_type == MaterialType.text), None)
-    chunks_result = await db.execute(
-        select(KnowledgeChunk)
-        .where(KnowledgeChunk.topic_id == topic_id)
-        .order_by(KnowledgeChunk.chunk_index)
-        .limit(20)
-    )
-    chunks = chunks_result.scalars().all()
-    content = "\n\n".join([c.chunk_text for c in chunks]) or (text.raw_text if text else "") or topic.description or ""
+    leksika_text = next((m for m in topic.materials if m.material_type == MaterialType.text and m.title == "Leksika"), None)
+    grammatika_text = next((m for m in topic.materials if m.material_type == MaterialType.text and m.title == "Grammatika"), None)
+
+    if not leksika_text and not grammatika_text:
+        legacy_text = next((m for m in topic.materials if m.material_type == MaterialType.text), None)
+        if legacy_text:
+            leksika_text = legacy_text
+
+    parts = []
+    if leksika_text and leksika_text.raw_text.strip():
+        parts.append(f"## Leksika\n\n{leksika_text.raw_text.strip()}")
+    if grammatika_text and grammatika_text.raw_text.strip():
+        parts.append(f"## Grammatika\n\n{grammatika_text.raw_text.strip()}")
+
+    content = "\n\n".join(parts) if parts else topic.description or ""
     return topic, content
 
 @router.get("/{topic_id}/translation")
 async def translate_topic(topic_id: int, language: str = "ru", db: AsyncSession = Depends(get_db)):
-    topic, content = await _topic_content(db, topic_id)
-    translated = await ai_service.translate_topic(topic.title, content, language)
+    result = await db.execute(
+        select(Topic)
+        .options(selectinload(Topic.materials))
+        .where(Topic.id == topic_id)
+    )
+    topic = result.scalar_one_or_none()
+    if not topic:
+        raise HTTPException(status_code=404, detail="Topic not found")
+
+    leksika_text = next((m for m in topic.materials if m.material_type == MaterialType.text and m.title == "Leksika"), None)
+    grammatika_text = next((m for m in topic.materials if m.material_type == MaterialType.text and m.title == "Grammatika"), None)
+
+    if not leksika_text and not grammatika_text:
+        legacy_text = next((m for m in topic.materials if m.material_type == MaterialType.text), None)
+        if legacy_text:
+            leksika_text = legacy_text
+
+    leksika_content = leksika_text.raw_text if leksika_text else ""
+    grammatika_content = grammatika_text.raw_text if grammatika_text else ""
+
+    translated_title = topic.title
+    translated_leksika = ""
+    translated_grammatika = ""
+
+    if leksika_content.strip():
+        trans_leksika = await ai_service.translate_topic(topic.title, leksika_content, language)
+        translated_leksika = trans_leksika["content"]
+        translated_title = trans_leksika["title"]
+
+    if grammatika_content.strip():
+        trans_gram = await ai_service.translate_topic(topic.title, grammatika_content, language)
+        translated_grammatika = trans_gram["content"]
+        if not translated_leksika:
+            translated_title = trans_gram["title"]
+
     return {
         "language": language,
-        "title": translated["title"],
-        "content": translated["content"],
+        "title": translated_title,
+        "leksika_content": translated_leksika,
+        "grammatika_content": translated_grammatika,
+        "content": translated_leksika or translated_grammatika or ""
     }
 
 @router.get("/{topic_id}/pdf")
@@ -454,26 +521,43 @@ async def update_topic(topic_id: int, req: TopicCreateRequest, db: AsyncSession 
             db.add(video_material)
 
     # 4. Update Text Material and Chunks
-    result = await db.execute(select(TopicMaterial).where(
+    # Clear old chunks and text materials
+    await db.execute(delete(KnowledgeChunk).where(KnowledgeChunk.topic_id == topic_id))
+    await db.execute(delete(TopicMaterial).where(
         TopicMaterial.topic_id == topic_id, 
         TopicMaterial.material_type == MaterialType.text
     ))
-    text_material = result.scalar_one_or_none()
-    if text_material:
-        text_material.raw_text = req.content
-        text_material.title = f"{req.title} - Content"
-        
-        # Clear old chunks and re-chunk
-        await db.execute(delete(KnowledgeChunk).where(KnowledgeChunk.topic_id == topic_id))
-        paragraphs = [p.strip() for p in req.content.split("\n\n") if p.strip()]
+
+    leksika_content = req.leksika_content or ""
+    grammatika_content = req.grammatika_content or ""
+    if not leksika_content and not grammatika_content and req.content:
+        leksika_content = req.content
+
+    async def add_text_material(title: str, text: str):
+        if not text.strip():
+            return
+        mat = TopicMaterial(
+            topic_id=topic_id,
+            uploaded_by_user_id=req.employee_id,
+            material_type=MaterialType.text,
+            title=title,
+            raw_text=text.strip()
+        )
+        db.add(mat)
+        await db.flush()
+
+        paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
         for i, p in enumerate(paragraphs):
             chunk = KnowledgeChunk(
-                topic_id=topic.id,
-                material_id=text_material.id,
+                topic_id=topic_id,
+                material_id=mat.id,
                 chunk_index=i,
                 chunk_text=p
             )
             db.add(chunk)
+
+    await add_text_material("Leksika", leksika_content)
+    await add_text_material("Grammatika", grammatika_content)
 
     await db.commit()
     return {"status": "updated"}
