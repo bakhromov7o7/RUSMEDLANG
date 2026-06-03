@@ -44,6 +44,14 @@ async def update_schema():
     except Exception as e:
         print(f"Info (topics.subject_id): {e}")
 
+    # 5. Add topic_type column to topics table
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(text("ALTER TABLE topics ADD COLUMN topic_type VARCHAR(50) DEFAULT 'leksika'"))
+        print("Column 'topic_type' added to 'topics'")
+    except Exception as e:
+        print(f"Info (topics.topic_type): {e}")
+
     print("Schema sync completed successfully.")
 
 if __name__ == "__main__":

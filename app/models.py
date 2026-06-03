@@ -78,6 +78,7 @@ class Topic(Base):
     subject_id = Column(BigInteger, ForeignKey("subjects.id", ondelete="CASCADE"), nullable=True)
     title = Column(String(255), nullable=False)
     description = Column(Text)
+    topic_type = Column(String(50), default="leksika", nullable=False)
     status = Column(Enum(TopicStatus, name="topic_status"), default=TopicStatus.draft, nullable=False)
     created_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)

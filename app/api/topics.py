@@ -34,6 +34,8 @@ class TopicCreateRequest(BaseModel):
     title: str
     description: Optional[str] = ""
     video_url: Optional[str] = ""
+    video_urls: Optional[List[str]] = []
+    topic_type: Optional[str] = "leksika"
     content: str # The main text content
 
 class SubjectCreateRequest(BaseModel):
@@ -65,21 +67,27 @@ async def create_topic(req: TopicCreateRequest, db: AsyncSession = Depends(get_d
             subject_id=req.subject_id,
             title=req.title,
             description=req.description,
+            topic_type=req.topic_type or "leksika",
             status=TopicStatus.active
         )
         db.add(topic)
         await db.flush()
 
-        # 3. Add Video Material if exists
-        if req.video_url:
-            video_material = TopicMaterial(
-                topic_id=topic.id,
-                uploaded_by_user_id=employee.id,
-                material_type=MaterialType.video,
-                title=f"{req.title} - Video",
-                source_url=req.video_url
-            )
-            db.add(video_material)
+        # 3. Add Video Materials
+        urls = list(req.video_urls) if req.video_urls else []
+        if req.video_url and req.video_url not in urls:
+            urls.insert(0, req.video_url)
+
+        for i, url in enumerate(urls):
+            if url.strip():
+                video_material = TopicMaterial(
+                    topic_id=topic.id,
+                    uploaded_by_user_id=employee.id,
+                    material_type=MaterialType.video,
+                    title=f"{req.title} - Video {i+1}",
+                    source_url=url.strip()
+                )
+                db.add(video_material)
 
         # 4. Add Text Material
         text_material = TopicMaterial(
@@ -124,15 +132,18 @@ async def list_topics(subject_id: Optional[int] = None, db: AsyncSession = Depen
     # Manually serialize to include materials source_url and content
     output = []
     for t in topics:
-        video = next((m for m in t.materials if m.material_type == MaterialType.video), None)
+        video_materials = [m for m in t.materials if m.material_type == MaterialType.video]
+        video_urls = [v.source_url for v in video_materials if v.source_url]
         text = next((m for m in t.materials if m.material_type == MaterialType.text), None)
         output.append({
             "id": t.id,
             "subject_id": t.subject_id,
             "title": t.title,
             "description": t.description,
+            "topic_type": t.topic_type or "leksika",
             "status": t.status.value if t.status else "draft",
-            "video_url": video.source_url if video else None,
+            "video_url": video_urls[0] if video_urls else None,
+            "video_urls": video_urls,
             "content": text.raw_text if text else ""
         })
     return output
@@ -418,34 +429,29 @@ async def update_topic(topic_id: int, req: TopicCreateRequest, db: AsyncSession 
     topic.title = req.title
     topic.description = req.description
     topic.subject_id = req.subject_id
+    topic.topic_type = req.topic_type or "leksika"
     
-    # 3. Update Video Material
+    # 3. Update Video Materials (Delete old and insert new)
     from sqlalchemy import delete
-    if req.video_url:
-        # Check if exists, else create
-        result = await db.execute(select(TopicMaterial).where(
-            TopicMaterial.topic_id == topic_id, 
-            TopicMaterial.material_type == MaterialType.video
-        ))
-        video_material = result.scalar_one_or_none()
-        if video_material:
-            video_material.source_url = req.video_url
-            video_material.title = f"{req.title} - Video"
-        else:
+    await db.execute(delete(TopicMaterial).where(
+        TopicMaterial.topic_id == topic_id, 
+        TopicMaterial.material_type == MaterialType.video
+    ))
+    
+    urls = list(req.video_urls) if req.video_urls else []
+    if req.video_url and req.video_url not in urls:
+        urls.insert(0, req.video_url)
+        
+    for i, url in enumerate(urls):
+        if url.strip():
             video_material = TopicMaterial(
                 topic_id=topic_id,
                 uploaded_by_user_id=req.employee_id,
                 material_type=MaterialType.video,
-                title=f"{req.title} - Video",
-                source_url=req.video_url
+                title=f"{req.title} - Video {i+1}",
+                source_url=url.strip()
             )
             db.add(video_material)
-    else:
-        # Delete video if removed
-        await db.execute(delete(TopicMaterial).where(
-            TopicMaterial.topic_id == topic_id, 
-            TopicMaterial.material_type == MaterialType.video
-        ))
 
     # 4. Update Text Material and Chunks
     result = await db.execute(select(TopicMaterial).where(
