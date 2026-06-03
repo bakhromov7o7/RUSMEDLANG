@@ -471,3 +471,96 @@ async def update_topic(topic_id: int, req: TopicCreateRequest, db: AsyncSession 
 
     await db.commit()
     return {"status": "updated"}
+
+@router.delete("/subjects/{subject_id}")
+async def delete_subject(subject_id: int, db: AsyncSession = Depends(get_db)):
+    from sqlalchemy import delete, update
+    from app.models import StudentTopicAccess, UserState, StudentSession, QuizAttempt, TopicMaterial, KnowledgeChunk
+    
+    result = await db.execute(select(Subject).where(Subject.id == subject_id))
+    subject = result.scalar_one_or_none()
+    if not subject:
+        raise HTTPException(status_code=404, detail="Fan topilmadi")
+        
+    try:
+        # Find all topics under this subject
+        topics_res = await db.execute(select(Topic).where(Topic.subject_id == subject_id))
+        topics_list = topics_res.scalars().all()
+        topic_ids = [t.id for t in topics_list]
+        
+        if topic_ids:
+            # Delete related quiz attempts for all these topics
+            await db.execute(delete(QuizAttempt).where(QuizAttempt.topic_id.in_(topic_ids)))
+            
+            # Nullify user states
+            await db.execute(
+                update(UserState)
+                .where((UserState.pending_topic_id.in_(topic_ids)) | (UserState.active_topic_id.in_(topic_ids)))
+                .values(pending_topic_id=None, active_topic_id=None)
+            )
+            
+            # Nullify student sessions
+            await db.execute(
+                update(StudentSession)
+                .where(StudentSession.topic_id.in_(topic_ids))
+                .values(topic_id=None)
+            )
+            
+            # Delete student topic access records
+            await db.execute(delete(StudentTopicAccess).where(StudentTopicAccess.topic_id.in_(topic_ids)))
+            
+            # Delete knowledge chunks
+            await db.execute(delete(KnowledgeChunk).where(KnowledgeChunk.topic_id.in_(topic_ids)))
+            
+            # Delete materials
+            await db.execute(delete(TopicMaterial).where(TopicMaterial.topic_id.in_(topic_ids)))
+            
+            # Delete topics
+            for t in topics_list:
+                await db.delete(t)
+                
+        # Delete subject itself
+        await db.delete(subject)
+        await db.commit()
+        return {"status": "deleted"}
+    except Exception as e:
+        await db.rollback()
+        logging.error(f"Error deleting subject {subject_id}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Fanni o'chirishda xatolik yuz berdi: {str(e)}"
+        )
+
+@router.put("/subjects/{subject_id}")
+async def update_subject(subject_id: int, req: SubjectCreateRequest, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(Subject).where(Subject.id == subject_id))
+    subject = result.scalar_one_or_none()
+    if not subject:
+        raise HTTPException(status_code=404, detail="Fan topilmadi")
+        
+    # Check if another subject has the same title
+    title_check = await db.execute(
+        select(Subject).where((Subject.title == req.title) & (Subject.id != subject_id))
+    )
+    if title_check.scalar_one_or_none():
+        raise HTTPException(status_code=400, detail="Bunday nomli fan allaqachon mavjud.")
+        
+    try:
+        subject.title = req.title
+        subject.description = req.description
+        await db.commit()
+        return {
+            "status": "updated",
+            "subject": {
+                "id": subject.id,
+                "title": subject.title,
+                "description": subject.description
+            }
+        }
+    except Exception as e:
+        await db.rollback()
+        logging.error(f"Error updating subject {subject_id}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Fanni tahrirlashda xatolik yuz berdi: {str(e)}"
+        )
