@@ -59,12 +59,15 @@ async def startup_event():
             "Please ensure table structures are migrated manually via migration scripts."
         )
     
-    # Start Telegram Bot (Disabled as requested)
-    # bot_app = create_bot_application()
-    # await bot_app.initialize()
-    # await bot_app.start()
-    # await bot_app.updater.start_polling()
-    # print("Telegram bot started.")
+    # Start Telegram Bot
+    bot_app = create_bot_application()
+    await bot_app.initialize()
+    if bot_app.updater is not None:
+        await bot_app.updater.initialize()
+    await bot_app.start()
+    if bot_app.updater is not None:
+        await bot_app.updater.start_polling()
+    print("Telegram bot started.")
 
 @app.get("/")
 async def root():
@@ -79,9 +82,11 @@ os.makedirs("uploads", exist_ok=True)
 # Mount static files for homework images
 app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 
-from app.api import auth, topics, quiz, homework
+from app.api import auth, topics, quiz, homework, arena, chat
 
 app.include_router(auth.router, prefix="/api/auth", tags=["Authentication"])
 app.include_router(topics.router, prefix="/api/topics", tags=["Topics"])
 app.include_router(quiz.router, prefix="/api/quiz", tags=["Quiz"])
 app.include_router(homework.router, prefix="/api/homework", tags=["Homework"])
+app.include_router(arena.router, prefix="/api/topics/arena", tags=["Clinical Arena"])
+app.include_router(chat.router, prefix="/api/chat", tags=["Chat"])

@@ -215,3 +215,47 @@ class Homework(Base):
     
     created_by = relationship("User", foreign_keys=[created_by_user_id])
     student = relationship("User", foreign_keys=[student_user_id])
+
+class HomeworkSubmission(Base):
+    __tablename__ = "homework_submissions"
+    
+    id = Column(BigInteger, primary_key=True)
+    homework_id = Column(BigInteger, ForeignKey("homeworks.id", ondelete="CASCADE"), nullable=False)
+    student_user_id = Column(BigInteger, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    text = Column(Text)
+    image_path = Column(Text)
+    status = Column(String(50), default="pending", nullable=False)  # pending, approved, rejected
+    grade = Column(String(50))  # score/rating
+    teacher_feedback = Column(Text)
+    submitted_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
+    graded_at = Column(DateTime(timezone=True))
+    
+    homework = relationship("Homework")
+    student = relationship("User", foreign_keys=[student_user_id])
+
+class ClinicalArenaAttempt(Base):
+    __tablename__ = "clinical_arena_attempts"
+    
+    id = Column(BigInteger, primary_key=True)
+    student_user_id = Column(BigInteger, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    mode = Column(String(50), nullable=False)  # case, duel
+    scenario_or_opponent = Column(String(255), nullable=False)
+    score = Column(Integer, nullable=False)
+    is_winner = Column(Boolean, default=False)
+    points_awarded = Column(Integer, default=0, nullable=False)
+    created_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
+    
+    student = relationship("User", foreign_keys=[student_user_id])
+
+class ChatMessage(Base):
+    __tablename__ = "chat_messages"
+    
+    id = Column(BigInteger, primary_key=True)
+    sender_id = Column(BigInteger, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    recipient_id = Column(BigInteger, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    message_text = Column(Text, nullable=False)
+    is_read = Column(Boolean, default=False, nullable=False)
+    created_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False, index=True)
+
+    sender = relationship("User", foreign_keys=[sender_id])
+    recipient = relationship("User", foreign_keys=[recipient_id])
