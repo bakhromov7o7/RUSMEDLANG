@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, File, UploadFile, Form
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from app.database import get_db
-from app.models import Homework, User, HomeworkSubmission
+from app.models import Homework, User, HomeworkSubmission, NotificationLog
 
 router = APIRouter(redirect_slashes=True)
 
@@ -275,7 +275,23 @@ async def grade_submission(submission_id: int, req: GradeRequest, db: AsyncSessi
         sub.grade = req.grade
         sub.teacher_feedback = req.teacher_feedback
         sub.graded_at = datetime.utcnow()
-        
+
+        # Notify the student that their homework was graded.
+        try:
+            hw_res = await db.execute(select(Homework).where(Homework.id == sub.homework_id))
+            hw = hw_res.scalar_one_or_none()
+            db.add(NotificationLog(
+                user_id=sub.student_user_id,
+                event_type="homework_graded",
+                payload={
+                    "title": hw.title if hw else "Vazifa",
+                    "status": sub.status,
+                    "grade": sub.grade,
+                },
+            ))
+        except Exception:
+            pass
+
         await db.commit()
         await db.refresh(sub)
         return {

@@ -7,6 +7,7 @@ import os
 load_dotenv()
 from app.bot.bot import create_bot_application
 from app.database import engine, Base
+from sqlalchemy import text
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
@@ -58,7 +59,23 @@ async def startup_event():
             "This is expected if the production DB user lacks DDL privileges. "
             "Please ensure table structures are migrated manually via migration scripts."
         )
-    
+
+    # Idempotent lightweight migrations for columns added after the initial
+    # deploy. Each runs in its own transaction; "already exists" errors (and
+    # missing-table errors) are ignored, so this is safe on fresh and existing
+    # databases (PostgreSQL and SQLite alike).
+    migrations = [
+        "ALTER TABLE chat_messages ADD COLUMN image_path VARCHAR",
+        "ALTER TABLE users ADD COLUMN last_active TIMESTAMP",
+    ]
+    for stmt in migrations:
+        try:
+            async with engine.begin() as conn:
+                await conn.execute(text(stmt))
+            logging.info(f"Applied migration: {stmt}")
+        except Exception as mig_err:
+            logging.debug(f"Skipped migration '{stmt}': {mig_err}")
+
     # Start Telegram Bot
     bot_app = create_bot_application()
     await bot_app.initialize()
@@ -82,7 +99,7 @@ os.makedirs("uploads", exist_ok=True)
 # Mount static files for homework images
 app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 
-from app.api import auth, topics, quiz, homework, arena, chat
+from app.api import auth, topics, quiz, homework, arena, chat, notifications
 
 app.include_router(auth.router, prefix="/api/auth", tags=["Authentication"])
 app.include_router(topics.router, prefix="/api/topics", tags=["Topics"])
@@ -90,3 +107,4 @@ app.include_router(quiz.router, prefix="/api/quiz", tags=["Quiz"])
 app.include_router(homework.router, prefix="/api/homework", tags=["Homework"])
 app.include_router(arena.router, prefix="/api/topics/arena", tags=["Clinical Arena"])
 app.include_router(chat.router, prefix="/api/chat", tags=["Chat"])
+app.include_router(notifications.router, prefix="/api/notifications", tags=["Notifications"])

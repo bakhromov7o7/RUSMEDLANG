@@ -13,7 +13,7 @@ from app.models import (
 )
 from pydantic import BaseModel, Field
 from jose import jwt
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import os
 
 router = APIRouter(redirect_slashes=True)
@@ -432,4 +432,90 @@ async def student_academic_stats(student_id: int, db: AsyncSession = Depends(get
         "standing": standing,
         "total_quizzes_taken": len(quiz_attempts),
         "total_homeworks_graded": len(hw_grades)
+    }
+
+
+TASHKENT_OFFSET = timedelta(hours=5)
+
+
+def _tashkent_date(dt):
+    """Return the calendar date in Tashkent time for a (possibly naive UTC) datetime."""
+    if dt is None:
+        return None
+    if dt.tzinfo is not None:
+        dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+    return (dt + TASHKENT_OFFSET).date()
+
+
+@router.get("/students/{student_id}/gamification")
+async def student_gamification(student_id: int, db: AsyncSession = Depends(get_db)):
+    """Derive XP, level, daily streak and today's goal from existing activity."""
+    res = await db.execute(select(User).where(User.id == student_id))
+    if not res.scalar_one_or_none():
+        raise HTTPException(status_code=404, detail="Student not found")
+
+    quiz_rows = (await db.execute(
+        select(QuizAttempt.correct_answers, QuizAttempt.started_at)
+        .where(QuizAttempt.student_user_id == student_id)
+    )).all()
+    hw_rows = (await db.execute(
+        select(HomeworkSubmission.status, HomeworkSubmission.submitted_at)
+        .where(HomeworkSubmission.student_user_id == student_id)
+    )).all()
+    arena_rows = (await db.execute(
+        select(ClinicalArenaAttempt.points_awarded, ClinicalArenaAttempt.created_at)
+        .where(ClinicalArenaAttempt.student_user_id == student_id)
+    )).all()
+
+    correct = sum((r[0] or 0) for r in quiz_rows)
+    approved = sum(1 for r in hw_rows if r[0] == "approved")
+    arena_points = sum((r[0] or 0) for r in arena_rows)
+    xp = correct * 10 + approved * 25 + arena_points
+
+    # Level curve: xp needed for level n floor = 50*(n-1)^2
+    level = int((xp / 50) ** 0.5) + 1
+    floor_current = 50 * (level - 1) ** 2
+    floor_next = 50 * level ** 2
+    xp_in_level = xp - floor_current
+    xp_for_next = floor_next - floor_current
+    progress = round(xp_in_level / xp_for_next, 3) if xp_for_next > 0 else 0.0
+
+    # Active days (Tashkent) across all activity types -> consecutive streak.
+    active_days = set()
+    for r in quiz_rows:
+        d = _tashkent_date(r[1])
+        if d:
+            active_days.add(d)
+    for r in hw_rows:
+        d = _tashkent_date(r[1])
+        if d:
+            active_days.add(d)
+    for r in arena_rows:
+        d = _tashkent_date(r[1])
+        if d:
+            active_days.add(d)
+
+    today = _tashkent_date(datetime.utcnow())
+    cursor = today if today in active_days else today - timedelta(days=1)
+    streak = 0
+    while cursor in active_days:
+        streak += 1
+        cursor -= timedelta(days=1)
+
+    done_today = sum(1 for r in quiz_rows if _tashkent_date(r[1]) == today)
+    daily_target = 1
+
+    return {
+        "student_id": student_id,
+        "xp": xp,
+        "level": level,
+        "xp_in_level": xp_in_level,
+        "xp_for_next": xp_for_next,
+        "progress": progress,
+        "streak": streak,
+        "daily_goal": {
+            "target": daily_target,
+            "done_today": done_today,
+            "completed": done_today >= daily_target,
+        },
     }

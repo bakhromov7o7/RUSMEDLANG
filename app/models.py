@@ -54,6 +54,7 @@ class User(Base):
     notes = Column(Text)
     created_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    last_active = Column(DateTime(timezone=True), nullable=True)
 
     creator = relationship("User", remote_side=[id])
     topics = relationship("Topic", back_populates="employee")
@@ -254,8 +255,18 @@ class ChatMessage(Base):
     sender_id = Column(BigInteger, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     recipient_id = Column(BigInteger, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     message_text = Column(Text, nullable=False)
+    image_path = Column(String, nullable=True)
     is_read = Column(Boolean, default=False, nullable=False)
     created_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False, index=True)
 
     sender = relationship("User", foreign_keys=[sender_id])
     recipient = relationship("User", foreign_keys=[recipient_id])
+
+class NotificationLog(Base):
+    __tablename__ = "notification_logs"
+
+    id = Column(BigInteger, primary_key=True)
+    user_id = Column(BigInteger, nullable=False, index=True)
+    event_type = Column(String, nullable=False, index=True)
+    payload = Column(JSON, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False, index=True)
