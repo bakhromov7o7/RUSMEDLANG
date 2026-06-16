@@ -67,6 +67,7 @@ async def startup_event():
     migrations = [
         "ALTER TABLE chat_messages ADD COLUMN image_path VARCHAR",
         "ALTER TABLE users ADD COLUMN last_active TIMESTAMP",
+        "ALTER TABLE homeworks ADD COLUMN subject_id INTEGER",
     ]
     for stmt in migrations:
         try:

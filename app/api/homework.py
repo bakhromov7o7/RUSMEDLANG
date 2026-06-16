@@ -23,6 +23,7 @@ async def create_homework(
     link: Optional[str] = Form(None),
     created_by_user_id: Optional[int] = Form(None),
     student_user_id: Optional[int] = Form(None),
+    subject_id: Optional[int] = Form(None),
     image: Optional[UploadFile] = File(None),
     db: AsyncSession = Depends(get_db)
 ):
@@ -48,7 +49,8 @@ async def create_homework(
             link=link,
             image_path=image_path,
             created_by_user_id=created_by_user_id,
-            student_user_id=student_user_id
+            student_user_id=student_user_id,
+            subject_id=subject_id
         )
         db.add(homework)
         await db.commit()
@@ -64,7 +66,8 @@ async def create_homework(
                 "image_path": homework.image_path,
                 "created_at": homework.created_at.isoformat(),
                 "created_by_user_id": homework.created_by_user_id,
-                "student_user_id": homework.student_user_id
+                "student_user_id": homework.student_user_id,
+                "subject_id": homework.subject_id
             }
         }
     except Exception as e:
@@ -72,10 +75,16 @@ async def create_homework(
         raise HTTPException(status_code=500, detail=f"Vazifa yaratishda xatolik yuz berdi: {str(e)}")
 
 @router.get("/")
-async def list_homeworks(student_user_id: Optional[int] = None, db: AsyncSession = Depends(get_db)):
+async def list_homeworks(
+    student_user_id: Optional[int] = None,
+    subject_id: Optional[int] = None,
+    db: AsyncSession = Depends(get_db)
+):
     stmt = select(Homework)
     if student_user_id:
         stmt = stmt.where((Homework.student_user_id == None) | (Homework.student_user_id == student_user_id))
+    if subject_id:
+        stmt = stmt.where(Homework.subject_id == subject_id)
     result = await db.execute(stmt.order_by(Homework.created_at.desc()))
     homeworks = result.scalars().all()
     
@@ -88,7 +97,8 @@ async def list_homeworks(student_user_id: Optional[int] = None, db: AsyncSession
             "image_path": hw.image_path,
             "created_at": hw.created_at.isoformat(),
             "created_by_user_id": hw.created_by_user_id,
-            "student_user_id": hw.student_user_id
+            "student_user_id": hw.student_user_id,
+            "subject_id": hw.subject_id
         }
         for hw in homeworks
     ]

@@ -206,6 +206,7 @@ class Homework(Base):
     __tablename__ = "homeworks"
     
     id = Column(BigInteger, primary_key=True)
+    subject_id = Column(BigInteger, ForeignKey("subjects.id", ondelete="CASCADE"), nullable=True)
     title = Column(String(255))
     text = Column(Text)
     link = Column(Text)
@@ -216,6 +217,7 @@ class Homework(Base):
     
     created_by = relationship("User", foreign_keys=[created_by_user_id])
     student = relationship("User", foreign_keys=[student_user_id])
+    subject = relationship("Subject")
 
 class HomeworkSubmission(Base):
     __tablename__ = "homework_submissions"

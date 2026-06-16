@@ -175,18 +175,42 @@ async def list_topics(subject_id: Optional[int] = None, db: AsyncSession = Depen
     return output
 
 @router.get("/subjects")
-async def list_subjects(db: AsyncSession = Depends(get_db)):
+async def list_subjects(user_id: Optional[int] = None, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(Subject).order_by(Subject.title))
     subjects = result.scalars().all()
-    return [
-        {
+    
+    output = []
+    for s in subjects:
+        progress = 0.0
+        if user_id:
+            # Get all active topics under this subject
+            topics_res = await db.execute(
+                select(Topic.id).where((Topic.subject_id == s.id) & (Topic.status == TopicStatus.active))
+            )
+            topic_ids = [row[0] for row in topics_res.all()]
+            
+            if topic_ids:
+                # Count unique active topics where the student has at least one finished quiz attempt
+                completed_res = await db.execute(
+                    select(QuizAttempt.topic_id)
+                    .where(
+                        (QuizAttempt.student_user_id == user_id) & 
+                        (QuizAttempt.topic_id.in_(topic_ids)) &
+                        (QuizAttempt.finished_at.isnot(None))
+                    )
+                    .distinct()
+                )
+                completed_count = len(completed_res.all())
+                progress = completed_count / len(topic_ids)
+                
+        output.append({
             "id": s.id,
             "title": s.title,
             "description": s.description or "",
-            "created_at": s.created_at.isoformat()
-        }
-        for s in subjects
-    ]
+            "created_at": s.created_at.isoformat(),
+            "progress": progress
+        })
+    return output
 
 @router.post("/subjects")
 async def create_subject(req: SubjectCreateRequest, db: AsyncSession = Depends(get_db)):

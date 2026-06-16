@@ -228,6 +228,7 @@ async def get_quiz_history(user_id: int, db: AsyncSession = Depends(get_db)):
         topic = topic_res.scalar_one_or_none()
         output.append({
             "id": a.id,
+            "topic_id": a.topic_id,
             "topic_title": topic.title if topic else "O'chirilgan mavzu",
             "score": a.correct_answers,
             "total": a.total_questions,
