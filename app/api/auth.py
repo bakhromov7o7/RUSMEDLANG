@@ -48,7 +48,8 @@ async def login(req: LoginRequest, db: AsyncSession = Depends(get_db)):
         "user": {
             "id": user.id,
             "full_name": user.full_name,
-            "role": user.role.value
+            "role": user.role.value,
+            "student_group": user.student_group or ""
         }
     }
 
