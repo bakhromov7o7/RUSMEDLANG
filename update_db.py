@@ -28,6 +28,9 @@ async def update_schema():
         ("parent_phone", "VARCHAR(50)"),
         ("birth_date", "VARCHAR(100)"),
         ("notes", "TEXT"),
+        ("target_topics", "INTEGER DEFAULT 2"),
+        ("target_quizzes", "INTEGER DEFAULT 5"),
+        ("target_ai_questions", "INTEGER DEFAULT 3"),
     ]:
         try:
             async with engine.begin() as conn:

@@ -10,6 +10,8 @@ from app.models import (
     KnowledgeChunk,
     User,
     UserRole,
+    StudentGrade,
+    Subject,
 )
 from app.services.ai_service import AIService
 from app.services.pdf_service import PDFService
@@ -421,3 +423,115 @@ async def _load_ai_questions(db: AsyncSession, student_id: int):
             "date": row["created_at"].isoformat(),
         })
     return items
+
+class StudentGradeCreateRequest(BaseModel):
+    student_user_id: int
+    subject_id: int
+    score: float
+    grade_label: Optional[str] = None
+
+@router.get("/grades/{student_user_id}")
+async def get_student_grades(student_user_id: int, db: AsyncSession = Depends(get_db)):
+    subj_res = await db.execute(select(Subject))
+    subjects = subj_res.scalars().all()
+
+    grades_res = await db.execute(
+        select(StudentGrade)
+        .where(StudentGrade.student_user_id == student_user_id)
+    )
+    grades = grades_res.scalars().all()
+    grades_map = {g.subject_id: g for g in grades}
+
+    output = []
+    for s in subjects:
+        g = grades_map.get(s.id)
+        title_lower = s.title.lower()
+        if "anatomiya" in title_lower:
+            credit = 5
+        elif "gistologiya" in title_lower:
+            credit = 4
+        elif "biokimyo" in title_lower:
+            credit = 5
+        elif "fiziologiya" in title_lower:
+            credit = 4
+        elif "mikrobiologiya" in title_lower:
+            credit = 3
+        elif "farmakologiya" in title_lower:
+            credit = 3
+        else:
+            credit = 2
+
+        score = g.score if g else 0.0
+        if g and g.grade_label:
+            label = g.grade_label
+        else:
+            if score >= 90:
+                label = "A'lo"
+            elif score >= 80:
+                label = "Yaxshi"
+            elif score >= 60:
+                label = "Qoniqarli"
+            else:
+                label = "Qoniqarsiz" if score > 0 else "-"
+
+        output.append({
+            "subject_id": s.id,
+            "subject_title": s.title,
+            "credit": credit,
+            "score": score,
+            "grade_label": label,
+            "grade_id": g.id if g else None
+        })
+    return output
+
+@router.post("/grades")
+async def upsert_student_grade(req: StudentGradeCreateRequest, db: AsyncSession = Depends(get_db)):
+    stu_res = await db.execute(select(User).where(User.id == req.student_user_id))
+    if not stu_res.scalar_one_or_none():
+        raise HTTPException(status_code=404, detail="Talaba topilmadi")
+
+    subj_res = await db.execute(select(Subject).where(Subject.id == req.subject_id))
+    if not subj_res.scalar_one_or_none():
+        raise HTTPException(status_code=404, detail="Fan topilmadi")
+
+    stmt = select(StudentGrade).where(
+        (StudentGrade.student_user_id == req.student_user_id) &
+        (StudentGrade.subject_id == req.subject_id)
+    )
+    res = await db.execute(stmt)
+    existing = res.scalar_one_or_none()
+
+    try:
+        if existing:
+            existing.score = req.score
+            if req.grade_label:
+                existing.grade_label = req.grade_label
+            else:
+                existing.grade_label = None
+        else:
+            grade = StudentGrade(
+                student_user_id=req.student_user_id,
+                subject_id=req.subject_id,
+                score=req.score,
+                grade_label=req.grade_label
+            )
+            db.add(grade)
+        await db.commit()
+        return {"status": "success", "message": "Baho saqlandi"}
+    except Exception as e:
+        await db.rollback()
+        raise HTTPException(status_code=500, detail=f"Bahoni saqlashda xatolik: {str(e)}")
+
+@router.delete("/grades/{grade_id}")
+async def delete_student_grade(grade_id: int, db: AsyncSession = Depends(get_db)):
+    res = await db.execute(select(StudentGrade).where(StudentGrade.id == grade_id))
+    grade = res.scalar_one_or_none()
+    if not grade:
+        raise HTTPException(status_code=404, detail="Baho topilmadi")
+    try:
+        await db.delete(grade)
+        await db.commit()
+        return {"status": "success", "message": "Baho o'chirildi"}
+    except Exception as e:
+        await db.rollback()
+        raise HTTPException(status_code=500, detail=f"O'chirishda xatolik: {str(e)}")

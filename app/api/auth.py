@@ -10,6 +10,7 @@ from app.models import (
     Topic,
     HomeworkSubmission,
     ClinicalArenaAttempt,
+    StudentGroup,
 )
 from pydantic import BaseModel, Field
 from jose import jwt
@@ -451,7 +452,8 @@ def _tashkent_date(dt):
 async def student_gamification(student_id: int, db: AsyncSession = Depends(get_db)):
     """Derive XP, level, daily streak and today's goal from existing activity."""
     res = await db.execute(select(User).where(User.id == student_id))
-    if not res.scalar_one_or_none():
+    student = res.scalar_one_or_none()
+    if not student:
         raise HTTPException(status_code=404, detail="Student not found")
 
     quiz_rows = (await db.execute(
@@ -503,7 +505,7 @@ async def student_gamification(student_id: int, db: AsyncSession = Depends(get_d
         cursor -= timedelta(days=1)
 
     done_today = sum(1 for r in quiz_rows if _tashkent_date(r[1]) == today)
-    daily_target = 1
+    daily_target = student.target_quizzes
 
     return {
         "student_id": student_id,
@@ -518,4 +520,114 @@ async def student_gamification(student_id: int, db: AsyncSession = Depends(get_d
             "done_today": done_today,
             "completed": done_today >= daily_target,
         },
+        "target_topics": student.target_topics,
+        "target_quizzes": student.target_quizzes,
+        "target_ai_questions": student.target_ai_questions,
     }
+
+class StudentGroupCreateRequest(BaseModel):
+    name: str
+
+class StudentGroupAssignRequest(BaseModel):
+    group_name: str
+
+@router.get("/groups")
+@router.get("/groups/")
+async def list_groups(db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(StudentGroup))
+    groups = result.scalars().all()
+    return [
+        {
+            "id": g.id,
+            "name": g.name,
+            "created_at": g.created_at.isoformat()
+        }
+        for g in groups
+    ]
+
+@router.post("/groups")
+@router.post("/groups/")
+async def create_group(req: StudentGroupCreateRequest, db: AsyncSession = Depends(get_db)):
+    check = await db.execute(select(StudentGroup).where(StudentGroup.name == req.name))
+    if check.scalar_one_or_none():
+        raise HTTPException(status_code=400, detail="Bunday guruh allaqachon mavjud.")
+    
+    try:
+        g = StudentGroup(name=req.name)
+        db.add(g)
+        await db.commit()
+        await db.refresh(g)
+        return {
+            "status": "success",
+            "group": {
+                "id": g.id,
+                "name": g.name,
+                "created_at": g.created_at.isoformat()
+            }
+        }
+    except Exception as e:
+        await db.rollback()
+        raise HTTPException(status_code=500, detail=f"Guruh yaratishda xatolik: {str(e)}")
+
+@router.delete("/groups/{group_id}")
+async def delete_group(group_id: int, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(StudentGroup).where(StudentGroup.id == group_id))
+    g = result.scalar_one_or_none()
+    if not g:
+        raise HTTPException(status_code=404, detail="Guruh topilmadi")
+    try:
+        await db.delete(g)
+        await db.commit()
+        return {"status": "success", "message": "Guruh muvaffaqiyatli o'chirildi"}
+    except Exception as e:
+        await db.rollback()
+        raise HTTPException(status_code=500, detail=f"O'chirishda xatolik: {str(e)}")
+
+@router.post("/students/{student_id}/assign-group")
+async def assign_group(student_id: int, req: StudentGroupAssignRequest, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(User).where(User.id == student_id))
+    student = result.scalar_one_or_none()
+    if not student:
+        raise HTTPException(status_code=404, detail="Talaba topilmadi")
+        
+    try:
+        student.student_group = req.group_name
+        await db.commit()
+        return {"status": "success", "message": "Talaba guruhiga qo'shildi"}
+    except Exception as e:
+        await db.rollback()
+        raise HTTPException(status_code=500, detail=f"Guruhga biriktirishda xatolik: {str(e)}")
+
+class StudentTargetsUpdateRequest(BaseModel):
+    target_topics: int
+    target_quizzes: int
+    target_ai_questions: int
+
+@router.post("/students/{student_id}/targets")
+async def update_student_targets(
+    student_id: int,
+    req: StudentTargetsUpdateRequest,
+    db: AsyncSession = Depends(get_db)
+):
+    res = await db.execute(select(User).where(User.id == student_id))
+    student = res.scalar_one_or_none()
+    if not student:
+        raise HTTPException(status_code=404, detail="Student not found")
+    
+    try:
+        student.target_topics = req.target_topics
+        student.target_quizzes = req.target_quizzes
+        student.target_ai_questions = req.target_ai_questions
+        await db.commit()
+        await db.refresh(student)
+        return {
+            "status": "success",
+            "targets": {
+                "target_topics": student.target_topics,
+                "target_quizzes": student.target_quizzes,
+                "target_ai_questions": student.target_ai_questions,
+            }
+        }
+    except Exception as e:
+        await db.rollback()
+        raise HTTPException(status_code=500, detail=f"Targetlarni yangilashda xatolik: {str(e)}")

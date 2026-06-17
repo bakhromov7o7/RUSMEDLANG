@@ -100,7 +100,7 @@ os.makedirs("uploads", exist_ok=True)
 # Mount static files for homework images
 app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 
-from app.api import auth, topics, quiz, homework, arena, chat, notifications
+from app.api import auth, topics, quiz, homework, arena, chat, notifications, announcements
 
 app.include_router(auth.router, prefix="/api/auth", tags=["Authentication"])
 app.include_router(topics.router, prefix="/api/topics", tags=["Topics"])
@@ -109,3 +109,4 @@ app.include_router(homework.router, prefix="/api/homework", tags=["Homework"])
 app.include_router(arena.router, prefix="/api/topics/arena", tags=["Clinical Arena"])
 app.include_router(chat.router, prefix="/api/chat", tags=["Chat"])
 app.include_router(notifications.router, prefix="/api/notifications", tags=["Notifications"])
+app.include_router(announcements.router, prefix="/api/announcements", tags=["Announcements"])

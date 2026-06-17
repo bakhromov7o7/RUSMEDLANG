@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, File, Form, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, or_, and_, func
 from app.database import get_db
-from app.models import ChatMessage, User, UserRole, NotificationLog
+from app.models import ChatMessage, User, UserRole, NotificationLog, GroupChatMessage
 from pydantic import BaseModel, Field
 
 router = APIRouter(redirect_slashes=True)
@@ -274,4 +274,98 @@ async def send_image(
             "is_read": msg.is_read,
             "created_at": msg.created_at.isoformat(),
         },
+    }
+
+
+@router.get("/group/messages")
+async def get_group_messages(group_name: str, db: AsyncSession = Depends(get_db)):
+    res = await db.execute(
+        select(GroupChatMessage)
+        .where(GroupChatMessage.group_name == group_name)
+        .order_by(GroupChatMessage.created_at.asc())
+    )
+    msgs = res.scalars().all()
+    
+    result = []
+    for m in msgs:
+        sender_res = await db.execute(select(User).where(User.id == m.sender_id))
+        sender = sender_res.scalar_one_or_none()
+        result.append({
+            "id": m.id,
+            "group_name": m.group_name,
+            "sender_id": m.sender_id,
+            "sender_name": sender.full_name if sender else "Noma'lum",
+            "sender_role": sender.role.value if sender else "student",
+            "message_text": m.message_text,
+            "image_path": m.image_path,
+            "created_at": m.created_at.isoformat(),
+        })
+    return result
+
+
+@router.post("/group/messages")
+async def send_group_message(
+    group_name: str = Form(...),
+    sender_id: int = Form(...),
+    message_text: str = Form(""),
+    image: UploadFile = File(None),
+    db: AsyncSession = Depends(get_db),
+):
+    sender = (await db.execute(select(User).where(User.id == sender_id))).scalar_one_or_none()
+    if not sender:
+        raise HTTPException(status_code=404, detail="Sender not found")
+        
+    image_url = None
+    if image:
+        os.makedirs(UPLOAD_DIR, exist_ok=True)
+        ext = os.path.splitext(image.filename or "")[1] or ".jpg"
+        fname = f"group_{uuid.uuid4().hex}{ext}"
+        fpath = os.path.join(UPLOAD_DIR, fname)
+        with open(fpath, "wb") as f:
+            f.write(await image.read())
+        image_url = f"/uploads/{fname}"
+
+    msg = GroupChatMessage(
+        group_name=group_name,
+        sender_id=sender_id,
+        message_text=(message_text or "").strip(),
+        image_path=image_url,
+    )
+    db.add(msg)
+    
+    try:
+        stmt = select(User).where(
+            (User.student_group == group_name) & (User.id != sender_id)
+        )
+        res = await db.execute(stmt)
+        other_members = res.scalars().all()
+        for m in other_members:
+            db.add(NotificationLog(
+                user_id=m.id,
+                event_type="group_message",
+                payload={
+                    "group_name": group_name,
+                    "sender_id": sender_id,
+                    "sender_name": sender.full_name,
+                    "preview": "📷 Rasm" if image_url else ((message_text or "")[:50]),
+                },
+            ))
+    except Exception:
+        pass
+        
+    await _touch_last_active(db, sender_id)
+    await db.commit()
+    
+    return {
+        "status": "success",
+        "message": {
+            "id": msg.id,
+            "group_name": msg.group_name,
+            "sender_id": msg.sender_id,
+            "sender_name": sender.full_name,
+            "sender_role": sender.role.value,
+            "message_text": msg.message_text,
+            "image_path": msg.image_path,
+            "created_at": msg.created_at.isoformat(),
+        }
     }

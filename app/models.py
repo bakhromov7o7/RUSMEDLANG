@@ -2,7 +2,7 @@ import enum
 from datetime import datetime
 from sqlalchemy import (
     Column, BigInteger, String, Boolean, DateTime, Enum, 
-    ForeignKey, Text, Integer, JSON, UniqueConstraint
+    ForeignKey, Text, Integer, JSON, UniqueConstraint, Float
 )
 from sqlalchemy.orm import relationship
 from app.database import Base
@@ -52,6 +52,9 @@ class User(Base):
     parent_phone = Column(String(50))
     birth_date = Column(String(100))
     notes = Column(Text)
+    target_topics = Column(Integer, default=2, nullable=False)
+    target_quizzes = Column(Integer, default=5, nullable=False)
+    target_ai_questions = Column(Integer, default=3, nullable=False)
     created_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
     last_active = Column(DateTime(timezone=True), nullable=True)
@@ -70,6 +73,7 @@ class Subject(Base):
     created_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
     
     topics = relationship("Topic", back_populates="subject", cascade="all, delete-orphan")
+    materials = relationship("SubjectMaterial", back_populates="subject", cascade="all, delete-orphan")
 
 class Topic(Base):
     __tablename__ = "topics"
@@ -264,6 +268,18 @@ class ChatMessage(Base):
     sender = relationship("User", foreign_keys=[sender_id])
     recipient = relationship("User", foreign_keys=[recipient_id])
 
+class GroupChatMessage(Base):
+    __tablename__ = "group_chat_messages"
+
+    id = Column(BigInteger, primary_key=True)
+    group_name = Column(String(100), nullable=False, index=True)
+    sender_id = Column(BigInteger, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    message_text = Column(Text, nullable=False)
+    image_path = Column(String, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False, index=True)
+
+    sender = relationship("User", foreign_keys=[sender_id])
+
 class NotificationLog(Base):
     __tablename__ = "notification_logs"
 
@@ -272,3 +288,75 @@ class NotificationLog(Base):
     event_type = Column(String, nullable=False, index=True)
     payload = Column(JSON, nullable=True)
     created_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False, index=True)
+
+class Announcement(Base):
+    __tablename__ = "announcements"
+
+    id = Column(BigInteger, primary_key=True)
+    title = Column(String(255), nullable=False)
+    content = Column(Text, nullable=False)
+    announcement_type = Column(String(50), default="umumiy", nullable=False)
+    views = Column(Integer, default=0, nullable=False)
+    created_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
+
+class SubjectMaterial(Base):
+    __tablename__ = "subject_materials"
+
+    id = Column(BigInteger, primary_key=True)
+    subject_id = Column(BigInteger, ForeignKey("subjects.id", ondelete="CASCADE"), nullable=False)
+    material_type = Column(String(50), default="pdf", nullable=False)
+    title = Column(String(255), nullable=False)
+    detail = Column(String(255))
+    url = Column(Text, nullable=False)
+    created_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
+
+    subject = relationship("Subject", back_populates="materials")
+
+class LessonSchedule(Base):
+    __tablename__ = "lesson_schedules"
+
+    id = Column(BigInteger, primary_key=True)
+    subject_id = Column(BigInteger, ForeignKey("subjects.id", ondelete="CASCADE"), nullable=False)
+    student_group = Column(String(100), nullable=False)
+    day_of_week = Column(Integer, nullable=False)
+    start_time = Column(String(10), nullable=False)
+    end_time = Column(String(10), nullable=False)
+    room = Column(String(50), nullable=False)
+    teacher_name = Column(String(255))
+    created_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
+
+    subject = relationship("Subject")
+
+class StudentGrade(Base):
+    __tablename__ = "student_grades"
+
+    id = Column(BigInteger, primary_key=True)
+    student_user_id = Column(BigInteger, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    subject_id = Column(BigInteger, ForeignKey("subjects.id", ondelete="CASCADE"), nullable=False)
+    score = Column(Float, nullable=False)
+    grade_label = Column(String(50))
+    created_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
+
+    student = relationship("User")
+    subject = relationship("Subject")
+
+class StudentGroup(Base):
+    __tablename__ = "student_groups"
+
+    id = Column(BigInteger, primary_key=True)
+    name = Column(String(100), nullable=False, unique=True)
+    created_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
+
+class MedicalTerm(Base):
+    __tablename__ = "medical_terms"
+
+    id = Column(BigInteger, primary_key=True)
+    word = Column(String(255), nullable=False)
+    transcription = Column(String(255))
+    gender = Column(String(100))
+    translation = Column(String(255), nullable=False)
+    category = Column(String(100), nullable=False)
+    description = Column(Text)
+    example_ru = Column(Text)
+    example_uz = Column(Text)
+    created_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)

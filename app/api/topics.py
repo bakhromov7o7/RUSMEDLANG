@@ -16,12 +16,25 @@ from app.models import (
     StudentSession,
     SessionState,
     Subject,
+    SubjectMaterial,
+    LessonSchedule,
+    MedicalTerm,
 )
 from app.services.ai_service import AIService
 from app.services.pdf_service import PDFService
 from pydantic import BaseModel
 from typing import Optional, List
 from datetime import datetime
+
+class MedicalTermCreateRequest(BaseModel):
+    word: str
+    transcription: Optional[str] = None
+    gender: Optional[str] = None
+    translation: str
+    category: str
+    description: Optional[str] = None
+    example_ru: Optional[str] = None
+    example_uz: Optional[str] = None
 
 router = APIRouter(redirect_slashes=True)
 ai_service = AIService()
@@ -678,3 +691,304 @@ async def update_subject(subject_id: int, req: SubjectCreateRequest, db: AsyncSe
             status_code=500,
             detail=f"Fanni tahrirlashda xatolik yuz berdi: {str(e)}"
         )
+
+class SubjectMaterialCreateRequest(BaseModel):
+    material_type: str
+    title: str
+    detail: Optional[str] = ""
+    url: str
+
+@router.get("/subjects/{subject_id}/materials")
+async def list_subject_materials(subject_id: int, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(
+        select(SubjectMaterial)
+        .where(SubjectMaterial.subject_id == subject_id)
+        .order_by(SubjectMaterial.created_at.desc())
+    )
+    materials = result.scalars().all()
+    return [
+        {
+            "id": m.id,
+            "subject_id": m.subject_id,
+            "material_type": m.material_type,
+            "title": m.title,
+            "detail": m.detail,
+            "url": m.url,
+            "created_at": m.created_at.isoformat()
+        }
+        for m in materials
+    ]
+
+@router.post("/subjects/{subject_id}/materials")
+async def create_subject_material(
+    subject_id: int,
+    req: SubjectMaterialCreateRequest,
+    db: AsyncSession = Depends(get_db)
+):
+    # Verify subject exists
+    subj_res = await db.execute(select(Subject).where(Subject.id == subject_id))
+    if not subj_res.scalar_one_or_none():
+        raise HTTPException(status_code=404, detail="Fan topilmadi")
+
+    try:
+        mat = SubjectMaterial(
+            subject_id=subject_id,
+            material_type=req.material_type,
+            title=req.title,
+            detail=req.detail,
+            url=req.url
+        )
+        db.add(mat)
+        await db.commit()
+        await db.refresh(mat)
+        return {
+            "status": "success",
+            "material": {
+                "id": mat.id,
+                "subject_id": mat.subject_id,
+                "material_type": mat.material_type,
+                "title": mat.title,
+                "detail": mat.detail,
+                "url": mat.url,
+                "created_at": mat.created_at.isoformat()
+            }
+        }
+    except Exception as e:
+        await db.rollback()
+        raise HTTPException(status_code=500, detail=f"Material yaratishda xatolik: {str(e)}")
+
+@router.delete("/materials/{material_id}")
+async def delete_subject_material(material_id: int, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(SubjectMaterial).where(SubjectMaterial.id == material_id))
+    mat = result.scalar_one_or_none()
+    if not mat:
+        raise HTTPException(status_code=404, detail="Material topilmadi")
+
+    try:
+        await db.delete(mat)
+        await db.commit()
+        return {"status": "success", "message": "Material muvaffaqiyatli o'chirildi"}
+    except Exception as e:
+        await db.rollback()
+        raise HTTPException(status_code=500, detail=f"O'chirishda xatolik yuz berdi: {str(e)}")
+
+class LessonScheduleCreateRequest(BaseModel):
+    subject_id: int
+    student_group: str
+    day_of_week: int
+    start_time: str
+    end_time: str
+    room: str
+    teacher_name: Optional[str] = ""
+
+@router.get("/schedules/all")
+async def list_all_schedules(
+    student_group: Optional[str] = None,
+    day_of_week: Optional[int] = None,
+    db: AsyncSession = Depends(get_db)
+):
+    stmt = select(LessonSchedule).options(selectinload(LessonSchedule.subject))
+    if student_group:
+        stmt = stmt.where(LessonSchedule.student_group == student_group)
+    if day_of_week:
+        stmt = stmt.where(LessonSchedule.day_of_week == day_of_week)
+        
+    result = await db.execute(stmt.order_by(LessonSchedule.day_of_week.asc(), LessonSchedule.start_time.asc()))
+    schedules = result.scalars().all()
+    
+    return [
+        {
+            "id": s.id,
+            "subject_id": s.subject_id,
+            "subject_title": s.subject.title if s.subject else "",
+            "student_group": s.student_group,
+            "day_of_week": s.day_of_week,
+            "start_time": s.start_time,
+            "end_time": s.end_time,
+            "room": s.room,
+            "teacher_name": s.teacher_name,
+            "created_at": s.created_at.isoformat()
+        }
+        for s in schedules
+    ]
+
+@router.post("/schedules")
+async def create_schedule(
+    req: LessonScheduleCreateRequest,
+    db: AsyncSession = Depends(get_db)
+):
+    # Verify subject exists
+    subj_res = await db.execute(select(Subject).where(Subject.id == req.subject_id))
+    if not subj_res.scalar_one_or_none():
+        raise HTTPException(status_code=404, detail="Fan topilmadi")
+        
+    try:
+        sched = LessonSchedule(
+            subject_id=req.subject_id,
+            student_group=req.student_group,
+            day_of_week=req.day_of_week,
+            start_time=req.start_time,
+            end_time=req.end_time,
+            room=req.room,
+            teacher_name=req.teacher_name
+        )
+        db.add(sched)
+        await db.commit()
+        await db.refresh(sched)
+        return {
+            "status": "success",
+            "schedule": {
+                "id": sched.id,
+                "subject_id": sched.subject_id,
+                "student_group": sched.student_group,
+                "day_of_week": sched.day_of_week,
+                "start_time": sched.start_time,
+                "end_time": sched.end_time,
+                "room": sched.room,
+                "teacher_name": sched.teacher_name,
+                "created_at": sched.created_at.isoformat()
+            }
+        }
+    except Exception as e:
+        await db.rollback()
+        raise HTTPException(status_code=500, detail=f"Dars jadvali yaratishda xatolik: {str(e)}")
+
+@router.delete("/schedules/{schedule_id}")
+async def delete_schedule(schedule_id: int, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(LessonSchedule).where(LessonSchedule.id == schedule_id))
+    sched = result.scalar_one_or_none()
+    if not sched:
+        raise HTTPException(status_code=404, detail="Dars jadvali topilmadi")
+        
+    try:
+        await db.delete(sched)
+        await db.commit()
+        return {"status": "success", "message": "Jadval muvaffaqiyatli o'chirildi"}
+    except Exception as e:
+        await db.rollback()
+        raise HTTPException(status_code=500, detail=f"O'chirishda xatolik yuz berdi: {str(e)}")
+
+@router.get("/dictionary")
+async def get_dictionary(
+    category: Optional[str] = None,
+    query: Optional[str] = None,
+    db: AsyncSession = Depends(get_db)
+):
+    stmt = select(MedicalTerm)
+    if category and category != "Barchasi":
+        stmt = stmt.where(MedicalTerm.category == category)
+    if query:
+        stmt = stmt.where(
+            MedicalTerm.word.ilike(f"%{query}%") | 
+            MedicalTerm.translation.ilike(f"%{query}%")
+        )
+    stmt = stmt.order_by(MedicalTerm.word.asc())
+    res = await db.execute(stmt)
+    terms = res.scalars().all()
+    return [
+        {
+            "id": t.id,
+            "word": t.word,
+            "transcription": t.transcription or "",
+            "gender": t.gender or "",
+            "translation": t.translation,
+            "category": t.category,
+            "description": t.description or "",
+            "exampleRu": t.example_ru or "",
+            "exampleUz": t.example_uz or "",
+        }
+        for t in terms
+    ]
+
+@router.post("/dictionary")
+async def create_dictionary_term(
+    req: MedicalTermCreateRequest,
+    db: AsyncSession = Depends(get_db)
+):
+    try:
+        term = MedicalTerm(
+            word=req.word,
+            transcription=req.transcription,
+            gender=req.gender,
+            translation=req.translation,
+            category=req.category,
+            description=req.description,
+            example_ru=req.example_ru,
+            example_uz=req.example_uz
+        )
+        db.add(term)
+        await db.commit()
+        await db.refresh(term)
+        return {
+            "status": "success",
+            "term": {
+                "id": term.id,
+                "word": term.word,
+                "transcription": term.transcription or "",
+                "gender": term.gender or "",
+                "translation": term.translation,
+                "category": term.category,
+                "description": term.description or "",
+                "exampleRu": term.example_ru or "",
+                "exampleUz": term.example_uz or "",
+            }
+        }
+    except Exception as e:
+        await db.rollback()
+        raise HTTPException(status_code=500, detail=f"Termin yaratishda xatolik: {str(e)}")
+
+@router.put("/dictionary/{term_id}")
+async def update_dictionary_term(
+    term_id: int,
+    req: MedicalTermCreateRequest,
+    db: AsyncSession = Depends(get_db)
+):
+    res = await db.execute(select(MedicalTerm).where(MedicalTerm.id == term_id))
+    term = res.scalar_one_or_none()
+    if not term:
+        raise HTTPException(status_code=404, detail="Termin topilmadi")
+    try:
+        term.word = req.word
+        term.transcription = req.transcription
+        term.gender = req.gender
+        term.translation = req.translation
+        term.category = req.category
+        term.description = req.description
+        term.example_ru = req.example_ru
+        term.example_uz = req.example_uz
+        await db.commit()
+        await db.refresh(term)
+        return {
+            "status": "success",
+            "term": {
+                "id": term.id,
+                "word": term.word,
+                "transcription": term.transcription or "",
+                "gender": term.gender or "",
+                "translation": term.translation,
+                "category": term.category,
+                "description": term.description or "",
+                "exampleRu": term.example_ru or "",
+                "exampleUz": term.example_uz or "",
+            }
+        }
+    except Exception as e:
+        await db.rollback()
+        raise HTTPException(status_code=500, detail=f"Terminni tahrirlashda xatolik: {str(e)}")
+
+@router.delete("/dictionary/{term_id}")
+async def delete_dictionary_term(
+    term_id: int,
+    db: AsyncSession = Depends(get_db)
+):
+    res = await db.execute(select(MedicalTerm).where(MedicalTerm.id == term_id))
+    term = res.scalar_one_or_none()
+    if not term:
+        raise HTTPException(status_code=404, detail="Termin topilmadi")
+    try:
+        await db.delete(term)
+        await db.commit()
+        return {"status": "success", "message": "Termin muvaffaqiyatli o'chirildi"}
+    except Exception as e:
+        await db.rollback()
+        raise HTTPException(status_code=500, detail=f"Terminni o'chirishda xatolik: {str(e)}")
