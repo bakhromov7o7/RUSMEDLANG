@@ -1,0 +1,27 @@
+# Muhit va sirlar
+.env
+.env.local
+*.pem
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+
+# Lokal SQLite bazalari (_demo.db, _smoke.db, test.db ...)
+*.db
+*.sqlite3
+
+# Runtime'da yaratiladigan kataloglar
+uploads/
+reports/
+
+# Loglar
+*.log
+
+# OS
+.DS_Store

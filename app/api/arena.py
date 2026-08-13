@@ -1,12 +1,18 @@
 import logging
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
-from app.database import get_db
-from app.models import ClinicalArenaAttempt, User
-from pydantic import BaseModel
+import random
 from typing import List, Optional
-from datetime import datetime
+
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel, Field
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.api._shared import iso, tashkent_date, tashkent_day_start_utc
+from app.core.security import get_current_user
+from app.database import get_db
+from app.models import ClinicalArenaAttempt, User, utcnow
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(redirect_slashes=True)
 
@@ -152,115 +158,295 @@ DUEL_QUESTIONS = [
     }
 ]
 
-# Request validation classes
+DUEL_SIZE = 5
+OPPONENTS = [
+    {"name": "Anvar Smirnov", "avatar": "👨‍⚕️", "accuracy": 0.8},
+    {"name": "Mariya Petrova", "avatar": "👩‍⚕️", "accuracy": 0.6},
+    {"name": "Dilnoza Alieva", "avatar": "👩‍⚕️", "accuracy": 0.75},
+]
+
+
+# ---------------------------------------------------------------------------
+# So'rov sxemalari
+# ---------------------------------------------------------------------------
+
 class CaseSubmitRequest(BaseModel):
-    student_id: int
-    case_id: str
-    selected_answers: List[str]  # e.g. ["A", "B", "A"]
+    case_id: str = Field(..., max_length=100)
+    selected_answers: List[str] = Field(..., min_length=1, max_length=20)
+    student_id: Optional[int] = None  # e'tiborsiz — tokendan olinadi
+
 
 class DuelSubmitRequest(BaseModel):
-    student_id: int
-    opponent_name: str
-    score: int  # 0 to 5
-    is_winner: bool
+    duel_id: int
+    # Har bir savol uchun tanlangan variant ("A".."D") yoki bo'sh.
+    answers: List[Optional[str]] = Field(default_factory=list, max_length=20)
+    student_id: Optional[int] = None
+    opponent_name: Optional[str] = None
+
+
+# ---------------------------------------------------------------------------
+# Klinik keys
+# ---------------------------------------------------------------------------
+
+def _public_case(case: dict) -> dict:
+    """To'g'ri javob va izohlarsiz nusxa.
+
+    Ilgari `correct_id` va har bir variantning izohi klientga yuborilardi —
+    talaba javobni ko'rib turardi.
+    """
+    return {
+        "id": case["id"],
+        "subject": case["subject"],
+        "title": case["title"],
+        "patient_name": case["patient_name"],
+        "vitals_start": case["vitals_start"],
+        "description": case["description"],
+        "stages": [
+            {
+                "index": stage["index"],
+                "title": stage["title"],
+                "question": stage["question"],
+                "options": [
+                    {"id": opt["id"], "text": opt["text"]} for opt in stage["options"]
+                ],
+            }
+            for stage in case["stages"]
+        ],
+    }
+
 
 @router.get("/case")
-async def get_daily_case():
-    # Return first case (Cardiology) as daily case
-    return CLINICAL_CASES["cardio_case"]
+async def get_daily_case(_user: User = Depends(get_current_user)):
+    """Kunlik klinik keys.
+
+    Ilgari har doim `cardio_case` qaytarilardi va qolgan keyslar umuman
+    ko'rinmasdi. Endi Toshkent sanasi bo'yicha navbat bilan almashadi —
+    kun davomida barcha talabalar bir xil keysni ko'radi.
+    """
+    keys = sorted(CLINICAL_CASES)
+    today = tashkent_date(utcnow())
+    index = today.toordinal() % len(keys) if today else 0
+    return _public_case(CLINICAL_CASES[keys[index]])
+
+
+async def _already_scored_today(db: AsyncSession, student_id: int, mode: str) -> bool:
+    """Bugun shu rejimda ball olinganmi (kuniga bir marta)."""
+    day_start = tashkent_day_start_utc()
+    count = (
+        await db.execute(
+            select(func.count(ClinicalArenaAttempt.id)).where(
+                ClinicalArenaAttempt.student_user_id == student_id,
+                ClinicalArenaAttempt.mode == mode,
+                ClinicalArenaAttempt.status == "finished",
+                ClinicalArenaAttempt.points_awarded > 0,
+                ClinicalArenaAttempt.created_at >= day_start,
+            )
+        )
+    ).scalar() or 0
+    return count > 0
+
 
 @router.post("/case/submit")
-async def submit_case(req: CaseSubmitRequest, db: AsyncSession = Depends(get_db)):
+async def submit_case(
+    req: CaseSubmitRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
     case = CLINICAL_CASES.get(req.case_id)
     if not case:
-        raise HTTPException(status_code=404, detail="Clinical case not found")
-        
+        raise HTTPException(status_code=404, detail="Klinik keys topilmadi")
+
     stages = case["stages"]
     if len(req.selected_answers) != len(stages):
-        raise HTTPException(status_code=400, detail="Selected answers count must match case stages count")
-        
+        raise HTTPException(
+            status_code=400, detail="Javoblar soni bosqichlar soniga teng bo'lishi kerak"
+        )
+
     correct_count = 0
-    feedback_details = []
-    
-    for i, selected in enumerate(req.selected_answers):
-        stage = stages[i]
-        is_correct = selected == stage["correct_id"]
+    details = []
+    for index, selected in enumerate(req.selected_answers):
+        stage = stages[index]
+        choice = (selected or "").strip().upper()
+        is_correct = choice == stage["correct_id"]
         if is_correct:
             correct_count += 1
-            
-        opt = next((o for o in stage["options"] if o["id"] == selected), None)
-        explanation = opt["explanation"] if opt else "Noto'g'ri tanlov."
-        feedback_details.append({
+
+        option = next((o for o in stage["options"] if o["id"] == choice), None)
+        details.append({
             "stage": stage["title"],
-            "selected": selected,
+            "selected": choice or None,
             "correct": stage["correct_id"],
             "is_correct": is_correct,
-            "explanation": explanation
+            "explanation": option["explanation"] if option else "Javob tanlanmadi.",
         })
-        
-    # Calculate score
-    score = int((correct_count / len(stages)) * 100)
-    # Award 150 points for 100% score, proportional otherwise
-    points_awarded = int((correct_count / len(stages)) * 150)
-    
-    # Save attempt
+
+    score = int(correct_count / len(stages) * 100)
+    # Ball kuniga bir marta beriladi — takroriy yechishda 0.
+    repeat = await _already_scored_today(db, current_user.id, "case")
+    points_awarded = 0 if repeat else int(correct_count / len(stages) * 150)
+
     attempt = ClinicalArenaAttempt(
-        student_user_id=req.student_id,
+        student_user_id=current_user.id,
         mode="case",
+        status="finished",
         scenario_or_opponent=case["title"],
         score=score,
         is_winner=correct_count == len(stages),
-        points_awarded=points_awarded
+        points_awarded=points_awarded,
+        finished_at=utcnow(),
     )
     db.add(attempt)
     await db.commit()
-    
+
     return {
         "score": score,
         "points_awarded": points_awarded,
+        "points_skipped_reason": "Bugun ball allaqachon olingan" if repeat else None,
         "correct_answers": correct_count,
         "total_stages": len(stages),
-        "details": feedback_details
+        "details": details,
     }
+
+
+# ---------------------------------------------------------------------------
+# Duel (tezkor test jangi)
+# ---------------------------------------------------------------------------
 
 @router.get("/duel")
-async def get_duel_questions():
-    # Return 5 random/sliced questions for quiz battle
-    import random
-    questions = random.sample(DUEL_QUESTIONS, min(5, len(DUEL_QUESTIONS)))
-    
-    # Return virtual opponents list as options
-    opponents = [
-        {"name": "Anvar Smirnov", "avatar": "👨‍⚕️", "accuracy": 0.8},
-        {"name": "Mariya Petrova", "avatar": "👩‍⚕️", "accuracy": 0.6},
-        {"name": "Dilnoza Alieva", "avatar": "👩‍⚕️", "accuracy": 0.75}
-    ]
-    selected_opponent = random.choice(opponents)
-    
-    return {
-        "opponent": selected_opponent,
-        "questions": questions
-    }
+async def get_duel_questions(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Duelni ochadi va savollarni to'g'ri javobsiz qaytaradi.
 
-@router.post("/duel/submit")
-async def submit_duel(req: DuelSubmitRequest, db: AsyncSession = Depends(get_db)):
-    # Calculate points: 15 points per correct answer + 25 points bonus if winner
-    points_awarded = (req.score * 15) + (25 if req.is_winner else 0)
-    
+    Berilgan savollar indeksi bazada saqlanadi — submit'da server aynan shu
+    savollar bo'yicha baholaydi, natija klientdan qabul qilinmaydi.
+    """
+    indexes = random.sample(range(len(DUEL_QUESTIONS)), min(DUEL_SIZE, len(DUEL_QUESTIONS)))
+    opponent = random.choice(OPPONENTS)
+
     attempt = ClinicalArenaAttempt(
-        student_user_id=req.student_id,
+        student_user_id=current_user.id,
         mode="duel",
-        scenario_or_opponent=req.opponent_name,
-        score=int((req.score / 5) * 100),
-        is_winner=req.is_winner,
-        points_awarded=points_awarded
+        status="issued",
+        scenario_or_opponent=opponent["name"],
+        issued_payload={"question_indexes": indexes, "opponent": opponent},
+        score=0,
+        is_winner=False,
+        points_awarded=0,
     )
     db.add(attempt)
     await db.commit()
-    
+    await db.refresh(attempt)
+
+    return {
+        "duel_id": attempt.id,
+        "opponent": opponent,
+        "questions": [
+            {
+                "index": position,
+                "question": DUEL_QUESTIONS[i]["question"],
+                "options": DUEL_QUESTIONS[i]["options"],
+            }
+            for position, i in enumerate(indexes)
+        ],
+    }
+
+
+@router.post("/duel/submit")
+async def submit_duel(
+    req: DuelSubmitRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    attempt = (
+        await db.execute(
+            select(ClinicalArenaAttempt).where(ClinicalArenaAttempt.id == req.duel_id)
+        )
+    ).scalar_one_or_none()
+    if not attempt or attempt.mode != "duel":
+        raise HTTPException(status_code=404, detail="Duel topilmadi")
+    if attempt.student_user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Bu duel sizga tegishli emas")
+    if attempt.status != "issued":
+        raise HTTPException(status_code=409, detail="Bu duel allaqachon yakunlangan")
+
+    payload = attempt.issued_payload or {}
+    indexes = payload.get("question_indexes") or []
+    opponent = payload.get("opponent") or {}
+
+    correct_count = 0
+    details = []
+    for position, question_index in enumerate(indexes):
+        question = DUEL_QUESTIONS[question_index]
+        choice = (req.answers[position] or "").strip().upper() if position < len(req.answers) else ""
+        is_correct = choice == question["correct_option"]
+        if is_correct:
+            correct_count += 1
+        details.append({
+            "question": question["question"],
+            "options": question["options"],
+            "selected": choice or None,
+            "correct_option": question["correct_option"],
+            "is_correct": is_correct,
+            "explanation": question["explanation"],
+        })
+
+    total = len(indexes) or 1
+    # Raqib natijasi uning "aniqligi" asosida hisoblanadi.
+    opponent_correct = round(float(opponent.get("accuracy", 0.7)) * total)
+    is_winner = correct_count > opponent_correct
+
+    repeat = await _already_scored_today(db, current_user.id, "duel")
+    points_awarded = 0 if repeat else (correct_count * 15) + (25 if is_winner else 0)
+
+    attempt.status = "finished"
+    attempt.score = int(correct_count / total * 100)
+    attempt.is_winner = is_winner
+    attempt.points_awarded = points_awarded
+    attempt.finished_at = utcnow()
+    await db.commit()
+
     return {
         "status": "success",
-        "points_awarded": points_awarded,
+        "duel_id": attempt.id,
         "score": attempt.score,
-        "is_winner": req.is_winner
+        "correct_answers": correct_count,
+        "total_questions": total,
+        "opponent_correct": opponent_correct,
+        "is_winner": is_winner,
+        "points_awarded": points_awarded,
+        "points_skipped_reason": "Bugun ball allaqachon olingan" if repeat else None,
+        "details": details,
     }
+
+
+@router.get("/history")
+async def arena_history(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    rows = (
+        await db.execute(
+            select(ClinicalArenaAttempt)
+            .where(
+                ClinicalArenaAttempt.student_user_id == current_user.id,
+                ClinicalArenaAttempt.status == "finished",
+            )
+            .order_by(ClinicalArenaAttempt.created_at.desc())
+            .limit(100)
+        )
+    ).scalars().all()
+
+    return [
+        {
+            "id": r.id,
+            "mode": r.mode,
+            "scenario_or_opponent": r.scenario_or_opponent,
+            "score": r.score,
+            "is_winner": r.is_winner,
+            "points_awarded": r.points_awarded,
+            "created_at": iso(r.created_at),
+        }
+        for r in rows
+    ]
