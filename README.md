@@ -90,6 +90,7 @@ kirishda parolni almashtirish so'raladi (`must_change_password`).
 | `scripts/seed_subjects.py` | Namuna fanlar va mavzular |
 | `scripts/seed_dictionary.py` | Tibbiy lug'at terminlari |
 | `scripts/seed_faq.py` | Yordam bo'limi uchun savol-javoblar |
+| `scripts/seed_demo_data.py` | Barcha jadvallar uchun demo ma'lumot (sinov va namoyish uchun) |
 | `scripts/smoke_test.py` | Auth, ruxsatlar va asosiy oqimlar tekshiruvi |
 | `scripts/e2e_test.py` | To'liq uchidan-uchiga tekshiruv: xodim va talabaning barcha oqimlari |
 | `scripts/test_quiz_flow.py` | Test oqimi (AI'siz, offline) |
@@ -195,6 +196,24 @@ assets/fonts/  PDF uchun Unicode font (README ga qarang)
 - **Kunlik AI limiti:** `AI_QUESTION_DAILY_LIMIT` (Toshkent vaqti bo'yicha).
 - **PDF fontlari:** kirill uchun `assets/fonts/README.md` ga qarang. Font
   topilmasa PDF baribir yaratiladi, lekin harflar `?` bilan almashadi.
+
+## Demo ma'lumot
+
+Bo'sh bazani sinov uchun to'ldirish (barcha 28 ta jadval):
+
+```bash
+python3 scripts/seed_demo_data.py              # baza manzilini ko'rsatib tasdiq so'raydi
+python3 scripts/seed_demo_data.py --yes        # tasdiqsiz
+python3 scripts/seed_demo_data.py --students 20 --yes
+python3 scripts/seed_demo_data.py --suffix 2 --yes   # ikkinchi mustaqil to'plam
+```
+
+Skript **idempotent** — qayta ishga tushirilsa dublikat yaratmaydi va mavjud
+ma'lumotga tegmaydi. Bazada superadmin bo'lsa, yangisi yaratilmaydi.
+
+Yaratiladigan hisoblar (parol hammasida `Demo12345`): `demo.admin`,
+`demo.ustoz1`, `demo.ustoz2`, `demo.talaba1` … `demo.talaba8`.
+Guruhlar: `DEMO-101`, `DEMO-102`.
 
 ## Davomat (`/api/attendance`)
 
