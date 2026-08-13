@@ -128,26 +128,35 @@ def upgrade() -> None:
         op.execute("UPDATE clinical_arena_attempts SET status = 'finished' WHERE status IS NULL")
 
     # 3. quiz_attempts.status (enum) ---------------------------------------
-    if "quiz_attempts" in tables and "status" not in _columns(insp, "quiz_attempts"):
-        if dialect == "postgresql":
-            op.execute(
-                "DO $$ BEGIN "
-                "IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'quiz_attempt_status') THEN "
-                "CREATE TYPE quiz_attempt_status AS ENUM ('in_progress', 'finished'); "
-                "END IF; END $$;"
-            )
-            op.execute(
-                "ALTER TABLE quiz_attempts ADD COLUMN status quiz_attempt_status "
-                "NOT NULL DEFAULT 'finished'"
-            )
-        else:
-            op.add_column(
-                "quiz_attempts",
-                sa.Column("status", sa.String(length=20), nullable=True),
-            )
-            op.execute("UPDATE quiz_attempts SET status = 'finished'")
-        # Eski urinishlarning hammasi yakunlangan deb hisoblanadi.
-        op.execute("UPDATE quiz_attempts SET status = 'finished' WHERE finished_at IS NOT NULL")
+    if "quiz_attempts" in tables:
+        if "status" not in _columns(insp, "quiz_attempts"):
+            if dialect == "postgresql":
+                op.execute(
+                    "DO $$ BEGIN "
+                    "IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'quiz_attempt_status') THEN "
+                    "CREATE TYPE quiz_attempt_status AS ENUM ('in_progress', 'finished'); "
+                    "END IF; END $$;"
+                )
+                op.execute(
+                    "ALTER TABLE quiz_attempts ADD COLUMN status quiz_attempt_status "
+                    "NOT NULL DEFAULT 'finished'"
+                )
+            else:
+                op.add_column(
+                    "quiz_attempts",
+                    sa.Column("status", sa.String(length=20), nullable=True),
+                )
+                op.execute("UPDATE quiz_attempts SET status = 'finished'")
+
+        # Tugallangan sanasi bor urinish — yakunlangan. Bu tekshiruv ustun
+        # shu revizioniyada qo'shilganidan qat'i nazar bajariladi: eski
+        # bazada ustun 0001 tomonidan standart qiymat ('in_progress') bilan
+        # qo'shilgan bo'lishi mumkin va u holda tarix statistikadan
+        # yo'qolib ketardi.
+        op.execute(
+            "UPDATE quiz_attempts SET status = 'finished' "
+            "WHERE finished_at IS NOT NULL AND status <> 'finished'"
+        )
 
     # 4. telegram_user_id endi majburiy emas --------------------------------
     if "users" in tables and dialect != "sqlite":
@@ -196,16 +205,23 @@ def upgrade() -> None:
             op.create_unique_constraint(name, table, columns)
 
     # 7. Indekslar ----------------------------------------------------------
+    #
+    # Diqqat: bu yerda `try/except` ga tayanib bo'lmaydi. PostgreSQL'da
+    # muvaffaqiyatsiz buyruq butun tranzaksiyani bekor qiladi va Python
+    # tomonda xatoni ushlab qolish yordam bermaydi — keyingi har bir so'rov
+    # "current transaction is aborted" bilan yiqiladi. Shuning uchun indeks
+    # yaratishdan oldin ustunlar mavjudligini tekshiramiz.
     insp = _inspector()
     for name, table, columns, unique in NEW_INDEXES:
         if table not in tables:
             continue
         if name in _indexes(insp, table):
             continue
-        try:
-            op.create_index(name, table, columns, unique=unique)
-        except Exception:  # noqa: BLE001 — mavjud bo'lsa yoki ustun yo'q bo'lsa o'tkazamiz
-            pass
+        available = _columns(insp, table)
+        missing = [c for c in columns if c not in available]
+        if missing:
+            continue
+        op.create_index(name, table, columns, unique=unique)
 
 
 def downgrade() -> None:
