@@ -126,7 +126,20 @@ QUIZ_QUESTION_COUNT=5
 AI_QUESTION_DAILY_LIMIT=10
 TOPIC_CONTEXT_CHUNK_LIMIT=10
 CHAT_PAGE_SIZE=100
+
+# === Davomatda joylashuv nazorati ===
+# O'quv binosining koordinatasi. Dars jadvalida alohida koordinata
+# kiritilmagan bo'lsa shu ishlatiladi. Bo'sh qoldirilsa joylashuv
+# tekshirilmaydi (holat "unknown"), hech kim jazolanmaydi.
+CAMPUS_LATITUDE=41.311081
+CAMPUS_LONGITUDE=69.240562
+ATTENDANCE_RADIUS_METERS=150
 ```
+
+> Koordinatani Google Maps'dan olish: kerakli nuqtaga o'ng tugma → birinchi
+> qator (`41.311081, 69.240562`) — birinchi son kenglik, ikkinchisi uzunlik.
+> Radius binoning kattaligi va GPS xatoligini qoplashi kerak — shahar sharoitida
+> 100–200 metr amalda yaxshi ishlaydi.
 
 `SECRET_KEY` ni generatsiya qilish:
 
@@ -164,6 +177,7 @@ Running upgrade 0001_baseline -> 0002_auth_and_grading
 Running upgrade 0002_auth_and_grading -> 0003_profile_features
 Running upgrade 0003_profile_features -> 0004_exam_mode
 Running upgrade 0004_exam_mode -> 0005_attendance
+Running upgrade 0005_attendance -> 0006_attendance_location
 ```
 
 ### Migratsiyalar ro'yxati
@@ -175,6 +189,7 @@ Running upgrade 0004_exam_mode -> 0005_attendance
 | `0003_profile_features` | Til, bildirishnoma sozlamalari, saqlanganlar, murojaatlar, FAQ, avatar |
 | `0004_exam_mode` | Imtihon rejimi: `exam_attempts`, `exam_questions` |
 | `0005_attendance` | Davomat: `attendance_records` (yo'qlama va sabab so'rovlari) |
+| `0006_attendance_location` | Joylashuv nazorati: `lesson_schedules` ga koordinata, `attendance_check_ins`, `location_violations` |
 
 Barcha migratsiyalar **himoyalangan**: mavjud jadval/ustunni qayta yaratmaydi,
 shuning uchun ishlab turgan bazada ham bemalol ishga tushirish mumkin.

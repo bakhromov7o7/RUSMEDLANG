@@ -101,6 +101,10 @@ class LessonScheduleCreateRequest(BaseModel):
     end_time: str = Field(..., max_length=10)
     room: str = Field(..., min_length=1, max_length=50)
     teacher_name: Optional[str] = Field(default="", max_length=255)
+    # Dars o'tiladigan joy — davomatda joylashuvni tekshirish uchun.
+    latitude: Optional[float] = Field(default=None, ge=-90, le=90)
+    longitude: Optional[float] = Field(default=None, ge=-180, le=180)
+    radius_meters: Optional[int] = Field(default=None, ge=20, le=5000)
 
     @field_validator("start_time", "end_time")
     @classmethod
@@ -362,6 +366,9 @@ def _schedule_public(s: LessonSchedule) -> dict:
         "end_time": s.end_time,
         "room": s.room,
         "teacher_name": s.teacher_name,
+        "latitude": s.latitude,
+        "longitude": s.longitude,
+        "radius_meters": s.radius_meters,
         "created_at": iso(s.created_at),
     }
 

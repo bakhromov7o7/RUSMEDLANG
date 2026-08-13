@@ -13,6 +13,7 @@ Qoidalar:
 """
 
 import logging
+import math
 import os
 from datetime import date as date_cls, timedelta
 from typing import List, Optional
@@ -24,17 +25,23 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.background import BackgroundTask
 
-from app.api._shared import iso
+from app.api._shared import as_utc, iso, tashkent_date
 from app.core.security import (
     ensure_can_access_user,
     get_current_user,
+    is_staff,
     require_staff,
 )
 from app.database import get_db
+from app.core import config
 from app.models import (
+    AttendanceCheckIn,
+    LocationViolation,
+    ViolationStatus,
     AttendanceRecord,
     AttendanceStatus,
     ExcuseStatus,
+    LocationStatus,
     LessonSchedule,
     NotificationLog,
     Subject,
@@ -81,6 +88,66 @@ def _cleanup(path: str) -> BackgroundTask:
     return BackgroundTask(_remove)
 
 
+# ---------------------------------------------------------------------------
+# Joylashuv
+# ---------------------------------------------------------------------------
+
+EARTH_RADIUS_M = 6_371_000
+
+
+def haversine_meters(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Ikki nuqta orasidagi masofa (metr).
+
+    Yer sferasi bo'yicha hisoblanadi — bir necha kilometrlik masofalarda
+    aniqligi yetarli.
+    """
+    phi1, phi2 = math.radians(lat1), math.radians(lat2)
+    d_phi = math.radians(lat2 - lat1)
+    d_lambda = math.radians(lon2 - lon1)
+    a = (
+        math.sin(d_phi / 2) ** 2
+        + math.cos(phi1) * math.cos(phi2) * math.sin(d_lambda / 2) ** 2
+    )
+    return 2 * EARTH_RADIUS_M * math.asin(math.sqrt(a))
+
+
+def lesson_point(schedule: LessonSchedule) -> tuple[Optional[float], Optional[float], int]:
+    """Dars nuqtasi va ruxsat etilgan radius.
+
+    Jadvalda koordinata bo'lmasa, `.env` dagi umumiy kampus nuqtasi
+    ishlatiladi. Ikkalasi ham bo'lmasa tekshiruv o'chadi.
+    """
+    radius = schedule.radius_meters or config.ATTENDANCE_RADIUS_METERS
+    if schedule.latitude is not None and schedule.longitude is not None:
+        return schedule.latitude, schedule.longitude, radius
+    return config.CAMPUS_LATITUDE, config.CAMPUS_LONGITUDE, radius
+
+
+def evaluate_location(
+    schedule: LessonSchedule, latitude: float, longitude: float
+) -> tuple[Optional[float], LocationStatus]:
+    """Berilgan nuqta dars joyidami — masofa va holat qaytaradi."""
+    point_lat, point_lon, radius = lesson_point(schedule)
+    if point_lat is None or point_lon is None:
+        # Dars joyi sozlanmagan — tekshirib bo'lmaydi.
+        return None, LocationStatus.unknown
+    distance = haversine_meters(point_lat, point_lon, latitude, longitude)
+    status = LocationStatus.inside if distance <= radius else LocationStatus.outside
+    return round(distance, 1), status
+
+
+def _location_public(distance: Optional[float], status: LocationStatus) -> dict:
+    return {
+        "distance_meters": distance,
+        "location_status": status.value,
+        "location_label": {
+            LocationStatus.inside: "Dars joyida",
+            LocationStatus.outside: "Dars joyida emas",
+            LocationStatus.unknown: "Tekshirilmadi",
+        }[status],
+    }
+
+
 class AttendanceMarkItem(BaseModel):
     student_user_id: int
     status: str = Field(..., max_length=20)
@@ -91,6 +158,19 @@ class AttendanceMarkRequest(BaseModel):
     schedule_id: int
     lesson_date: date_cls
     records: List[AttendanceMarkItem] = Field(..., min_length=1, max_length=200)
+    # Ustozning yo'qlama paytidagi joylashuvi (ixtiyoriy — ruxsat berilmasa
+    # yuborilmaydi). Bloklamaydi, faqat yozib qo'yiladi.
+    latitude: Optional[float] = Field(default=None, ge=-90, le=90)
+    longitude: Optional[float] = Field(default=None, ge=-180, le=180)
+
+
+class CheckInRequest(BaseModel):
+    """Talabaning "Men keldim" belgisi."""
+
+    schedule_id: int
+    lesson_date: date_cls
+    latitude: float = Field(..., ge=-90, le=90)
+    longitude: float = Field(..., ge=-180, le=180)
 
 
 class ExcuseCreateRequest(BaseModel):
@@ -255,6 +335,19 @@ async def lesson_roster(
             )
         ).scalars().all()
     }
+    # Talabalarning "Men keldim" belgisi va joylashuvi.
+    check_ins = {
+        item.student_user_id: item
+        for item in (
+            await db.execute(
+                select(AttendanceCheckIn).where(
+                    AttendanceCheckIn.schedule_id == schedule_id,
+                    AttendanceCheckIn.lesson_date == lesson_date,
+                )
+            )
+        ).scalars().all()
+    }
+    point_lat, point_lon, radius = lesson_point(schedule)
 
     return {
         "schedule_id": schedule.id,
@@ -265,6 +358,9 @@ async def lesson_roster(
         "start_time": schedule.start_time,
         "end_time": schedule.end_time,
         "room": schedule.room,
+        # Dars joyi sozlanganmi — ilova shunga qarab ogohlantiradi.
+        "location_configured": point_lat is not None and point_lon is not None,
+        "radius_meters": radius,
         # Ilova shu ro'yxatni to'g'ridan-to'g'ri ko'rsatadi: holat `null` bo'lsa
         # talaba hali belgilanmagan.
         "students": [
@@ -278,6 +374,22 @@ async def lesson_roster(
                     existing[student.id].excuse_status.value if student.id in existing else "none"
                 ),
                 "record_id": existing[student.id].id if student.id in existing else None,
+                **(
+                    {
+                        **_location_public(
+                            check_ins[student.id].distance_meters,
+                            check_ins[student.id].status,
+                        ),
+                        "checked_in_at": iso(check_ins[student.id].created_at),
+                    }
+                    if student.id in check_ins
+                    else {
+                        "distance_meters": None,
+                        "location_status": None,
+                        "location_label": "Belgilanmagan",
+                        "checked_in_at": None,
+                    }
+                ),
             }
             for student in students
         ],
@@ -318,6 +430,14 @@ async def mark_attendance(
         await db.execute(select(Subject.title).where(Subject.id == schedule.subject_id))
     ).scalar_one_or_none() or "Dars"
 
+    # Ustozning yo'qlama paytidagi joylashuvi — bloklamaydi, faqat yoziladi.
+    teacher_distance: Optional[float] = None
+    teacher_status = LocationStatus.unknown
+    if req.latitude is not None and req.longitude is not None:
+        teacher_distance, teacher_status = evaluate_location(
+            schedule, req.latitude, req.longitude
+        )
+
     saved = 0
     for item in req.records:
         status = _parse_status(item.status)
@@ -337,6 +457,9 @@ async def mark_attendance(
         record.status = status
         record.note = item.note
         record.marked_by_user_id = staff.id
+        record.marked_latitude = req.latitude
+        record.marked_longitude = req.longitude
+        record.marked_distance_meters = teacher_distance
         # Qo'lda "sababli" qilinsa, kutilayotgan so'rov yopiladi.
         if status == AttendanceStatus.excused and record.excuse_status == ExcuseStatus.pending:
             record.excuse_status = ExcuseStatus.approved
@@ -364,6 +487,7 @@ async def mark_attendance(
         "saved": saved,
         "schedule_id": schedule.id,
         "date": req.lesson_date.isoformat(),
+        "teacher_location": _location_public(teacher_distance, teacher_status),
     }
 
 
@@ -470,6 +594,356 @@ async def student_summary(
     ensure_can_access_user(current_user, student_id)
     records, titles = await _records_for_student(db, student_id, date_from, date_to)
     return {"student_id": student_id, "summary": _summarize(records, titles)}
+
+
+# ---------------------------------------------------------------------------
+# Talaba joylashuvi: "Men keldim" va dars vaqtidagi tekshiruv
+# ---------------------------------------------------------------------------
+
+# Tushuntirish yuborish uchun beriladigan vaqt.
+EXPLAIN_WINDOW_HOURS = 12
+
+
+def _now_hhmm() -> str:
+    """Toshkent vaqti bo'yicha joriy soat (HH:MM)."""
+    local = utcnow() + config.TASHKENT_OFFSET
+    return local.strftime("%H:%M")
+
+
+async def _current_lesson(db: AsyncSession, student: User) -> Optional[LessonSchedule]:
+    """Talabaning guruhida hozir ketayotgan dars (bo'lsa)."""
+    group = (student.student_group or "").strip()
+    if not group:
+        return None
+
+    today = tashkent_date(utcnow()) or date_cls.today()
+    now = _now_hhmm()
+    return (
+        await db.execute(
+            select(LessonSchedule)
+            .where(
+                LessonSchedule.student_group == group,
+                LessonSchedule.day_of_week == today.isoweekday(),
+                LessonSchedule.start_time <= now,
+                LessonSchedule.end_time >= now,
+            )
+            .order_by(LessonSchedule.start_time)
+        )
+    ).scalars().first()
+
+
+def _violation_public(violation: LocationViolation, subject_title: Optional[str] = None) -> dict:
+    remaining = (
+        as_utc(violation.explain_deadline) - utcnow()
+        if violation.explain_deadline
+        else None
+    )
+    return {
+        "id": violation.id,
+        "student_user_id": violation.student_user_id,
+        "schedule_id": violation.schedule_id,
+        "subject_id": violation.subject_id,
+        "subject_title": subject_title,
+        "date": violation.lesson_date.isoformat() if violation.lesson_date else None,
+        "detected_at": iso(violation.detected_at),
+        "distance_meters": violation.distance_meters,
+        "status": violation.status.value,
+        "explain_deadline": iso(violation.explain_deadline),
+        "hours_left": (
+            max(round(remaining.total_seconds() / 3600, 1), 0) if remaining else 0
+        ),
+        "explanation": violation.explanation,
+        "explained_at": iso(violation.explained_at),
+        "review_comment": violation.review_comment,
+    }
+
+
+async def _expire_overdue(db: AsyncSession) -> None:
+    """Muddati o'tgan, javobsiz qolgan ogohlantirishlarni yopadi."""
+    overdue = (
+        await db.execute(
+            select(LocationViolation).where(
+                LocationViolation.status == ViolationStatus.pending,
+                LocationViolation.explain_deadline < utcnow(),
+            )
+        )
+    ).scalars().all()
+    if not overdue:
+        return
+    for violation in overdue:
+        violation.status = ViolationStatus.expired
+    await db.commit()
+
+
+@router.post("/check-in")
+async def check_in(
+    req: CheckInRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Talaba "Men keldim" deb belgilaydi va joylashuvini yuboradi.
+
+    Bu davomatni avtomatik qo'ymaydi — ustoz ro'yxatida talabaning dars
+    joyida ekani ko'rinadi va qarorni ustoz qabul qiladi.
+    """
+    schedule = await _load_schedule(db, req.schedule_id)
+    if (current_user.student_group or "").strip() != schedule.student_group:
+        raise HTTPException(status_code=403, detail="Bu dars sizning guruhingizga tegishli emas")
+    if req.lesson_date > date_cls.today():
+        raise HTTPException(status_code=400, detail="Kelajakdagi dars uchun belgilab bo'lmaydi")
+
+    distance, status = evaluate_location(schedule, req.latitude, req.longitude)
+
+    existing = (
+        await db.execute(
+            select(AttendanceCheckIn).where(
+                AttendanceCheckIn.student_user_id == current_user.id,
+                AttendanceCheckIn.schedule_id == schedule.id,
+                AttendanceCheckIn.lesson_date == req.lesson_date,
+            )
+        )
+    ).scalar_one_or_none()
+
+    if existing is None:
+        existing = AttendanceCheckIn(
+            student_user_id=current_user.id,
+            schedule_id=schedule.id,
+            lesson_date=req.lesson_date,
+        )
+        db.add(existing)
+
+    existing.latitude = req.latitude
+    existing.longitude = req.longitude
+    existing.distance_meters = distance
+    existing.status = status
+    existing.created_at = utcnow()
+
+    await db.commit()
+    return {"status": "success", **_location_public(distance, status)}
+
+
+@router.post("/location-ping")
+async def location_ping(
+    req: CheckInRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Dars vaqtidagi joylashuv tekshiruvi.
+
+    Ilova dars davomida (ochiq bo'lganda yoki hududdan chiqish hodisasida)
+    shu endpointga joylashuvni yuboradi. Talaba dars joyidan tashqarida
+    bo'lsa, unga ogohlantirish yuboriladi va 12 soat ichida tushuntirish
+    berish so'raladi.
+
+    `schedule_id` 0 bo'lsa, server joriy darsni jadvaldan o'zi topadi.
+    """
+    schedule: Optional[LessonSchedule] = None
+    if req.schedule_id:
+        schedule = await _load_schedule(db, req.schedule_id)
+    else:
+        schedule = await _current_lesson(db, current_user)
+
+    if schedule is None:
+        # Hozir dars yo'q — tekshiradigan narsa ham yo'q.
+        return {"status": "no_lesson", "violation": None}
+
+    distance, status = evaluate_location(schedule, req.latitude, req.longitude)
+    lesson_date = tashkent_date(utcnow()) or date_cls.today()
+
+    if status != LocationStatus.outside:
+        return {"status": status.value, "violation": None, **_location_public(distance, status)}
+
+    # Shu dars uchun ogohlantirish allaqachon berilganmi?
+    existing = (
+        await db.execute(
+            select(LocationViolation).where(
+                LocationViolation.student_user_id == current_user.id,
+                LocationViolation.schedule_id == schedule.id,
+                LocationViolation.lesson_date == lesson_date,
+            )
+        )
+    ).scalar_one_or_none()
+    if existing is not None:
+        return {
+            "status": "already_reported",
+            "violation": _violation_public(existing),
+            **_location_public(distance, status),
+        }
+
+    subject_title = (
+        await db.execute(select(Subject.title).where(Subject.id == schedule.subject_id))
+    ).scalar_one_or_none() or "Dars"
+
+    deadline = utcnow() + timedelta(hours=EXPLAIN_WINDOW_HOURS)
+    violation = LocationViolation(
+        student_user_id=current_user.id,
+        schedule_id=schedule.id,
+        subject_id=schedule.subject_id,
+        lesson_date=lesson_date,
+        latitude=req.latitude,
+        longitude=req.longitude,
+        distance_meters=distance,
+        status=ViolationStatus.pending,
+        explain_deadline=deadline,
+    )
+    db.add(violation)
+
+    db.add(NotificationLog(
+        user_id=current_user.id,
+        event_type="location_violation",
+        payload={
+            "subject": subject_title,
+            "date": lesson_date.isoformat(),
+            "distance_meters": distance,
+            "deadline": deadline.isoformat(),
+            "message": (
+                f"Dars vaqtida ({subject_title}) o'quv binosida emasligingiz "
+                f"aniqlandi. {EXPLAIN_WINDOW_HOURS} soat ichida sababini "
+                "tushuntirib so'rov yuborishingiz kerak."
+            ),
+        },
+    ))
+
+    await db.commit()
+    await db.refresh(violation)
+    return {
+        "status": "violation",
+        "violation": _violation_public(violation, subject_title),
+        **_location_public(distance, status),
+    }
+
+
+class ViolationExplainRequest(BaseModel):
+    explanation: str = Field(..., min_length=3, max_length=2000)
+
+
+class ViolationReviewRequest(BaseModel):
+    accept: bool
+    comment: Optional[str] = Field(default=None, max_length=500)
+
+
+@router.get("/violations")
+async def list_violations(
+    status_filter: Optional[str] = Query(default=None, alias="status"),
+    limit: int = Query(100, ge=1, le=300),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Ogohlantirishlar. Talaba o'zinikini, xodim hammasini ko'radi."""
+    await _expire_overdue(db)
+
+    stmt = (
+        select(LocationViolation, User.full_name, User.student_group, Subject.title)
+        .join(User, User.id == LocationViolation.student_user_id)
+        .outerjoin(Subject, Subject.id == LocationViolation.subject_id)
+    )
+    if not is_staff(current_user):
+        stmt = stmt.where(LocationViolation.student_user_id == current_user.id)
+    if status_filter:
+        try:
+            stmt = stmt.where(LocationViolation.status == ViolationStatus(status_filter))
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Noto'g'ri status qiymati")
+
+    rows = (
+        await db.execute(stmt.order_by(LocationViolation.detected_at.desc()).limit(limit))
+    ).all()
+
+    return [
+        {
+            **_violation_public(row.LocationViolation, row.title),
+            "student_name": row.full_name,
+            "student_group_name": row.student_group,
+        }
+        for row in rows
+    ]
+
+
+@router.get("/violations/pending-count")
+async def violations_pending_count(
+    _staff: User = Depends(require_staff),
+    db: AsyncSession = Depends(get_db),
+):
+    await _expire_overdue(db)
+    total = (
+        await db.execute(
+            select(func.count(LocationViolation.id)).where(
+                LocationViolation.status == ViolationStatus.submitted
+            )
+        )
+    ).scalar() or 0
+    return {"count": total}
+
+
+@router.post("/violations/{violation_id}/explain")
+async def explain_violation(
+    violation_id: int,
+    req: ViolationExplainRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Talaba 12 soat ichida sababini tushuntiradi."""
+    violation = (
+        await db.execute(select(LocationViolation).where(LocationViolation.id == violation_id))
+    ).scalar_one_or_none()
+    if not violation:
+        raise HTTPException(status_code=404, detail="Ogohlantirish topilmadi")
+    if violation.student_user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Bu ogohlantirish sizga tegishli emas")
+    if violation.status not in (ViolationStatus.pending, ViolationStatus.rejected):
+        raise HTTPException(status_code=409, detail="Bu ogohlantirish allaqachon ko'rib chiqilgan")
+    if as_utc(violation.explain_deadline) < utcnow():
+        violation.status = ViolationStatus.expired
+        await db.commit()
+        raise HTTPException(
+            status_code=409,
+            detail=f"Tushuntirish muddati ({EXPLAIN_WINDOW_HOURS} soat) o'tib ketdi",
+        )
+
+    violation.explanation = req.explanation.strip()
+    violation.explained_at = utcnow()
+    violation.status = ViolationStatus.submitted
+    await db.commit()
+    await db.refresh(violation)
+    return {"status": "success", "violation": _violation_public(violation)}
+
+
+@router.post("/violations/{violation_id}/review")
+async def review_violation(
+    violation_id: int,
+    req: ViolationReviewRequest,
+    staff: User = Depends(require_staff),
+    db: AsyncSession = Depends(get_db),
+):
+    """Xodim tushuntirishni qabul qiladi yoki rad etadi."""
+    violation = (
+        await db.execute(select(LocationViolation).where(LocationViolation.id == violation_id))
+    ).scalar_one_or_none()
+    if not violation:
+        raise HTTPException(status_code=404, detail="Ogohlantirish topilmadi")
+    if violation.status not in (ViolationStatus.submitted, ViolationStatus.expired):
+        raise HTTPException(status_code=409, detail="Bu ogohlantirish ko'rib chiqishga tayyor emas")
+
+    violation.status = (
+        ViolationStatus.accepted if req.accept else ViolationStatus.rejected
+    )
+    violation.reviewed_by_user_id = staff.id
+    violation.reviewed_at = utcnow()
+    violation.review_comment = req.comment
+
+    db.add(NotificationLog(
+        user_id=violation.student_user_id,
+        event_type="violation_reviewed",
+        payload={
+            "accepted": bool(req.accept),
+            "comment": req.comment,
+            "date": violation.lesson_date.isoformat() if violation.lesson_date else None,
+        },
+    ))
+
+    await db.commit()
+    await db.refresh(violation)
+    return {"status": "success", "violation": _violation_public(violation)}
 
 
 # ---------------------------------------------------------------------------

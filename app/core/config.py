@@ -69,5 +69,23 @@ AI_QUESTION_DAILY_LIMIT = _int("AI_QUESTION_DAILY_LIMIT", 10)
 TOPIC_CONTEXT_CHUNK_LIMIT = _int("TOPIC_CONTEXT_CHUNK_LIMIT", 10)
 CHAT_PAGE_SIZE = _int("CHAT_PAGE_SIZE", 100)
 
+# --- Joylashuv (davomat tekshiruvi) -------------------------------------
+# Dars jadvalida koordinata ko'rsatilmagan bo'lsa shu nuqta ishlatiladi.
+# Bo'sh qoldirilsa joylashuv tekshiruvi o'chadi (masofa hisoblanmaydi).
+def _float_or_none(name: str):
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return None
+    try:
+        return float(raw)
+    except ValueError:
+        return None
+
+
+CAMPUS_LATITUDE = _float_or_none("CAMPUS_LATITUDE")
+CAMPUS_LONGITUDE = _float_or_none("CAMPUS_LONGITUDE")
+# Shu masofagacha "dars joyida" deb hisoblanadi.
+ATTENDANCE_RADIUS_METERS = _int("ATTENDANCE_RADIUS_METERS", 150)
+
 # O'zbekiston vaqti (UTC+5) — kunlik limit va streak hisobida ishlatiladi.
 TASHKENT_OFFSET = timedelta(hours=5)

@@ -247,6 +247,12 @@ ko'radi.
 | `GET /my?from=&to=` | talaba | O'z davomati: xulosa va yozuvlar |
 | `POST /excuses` | talaba | Qoldirilgan dars uchun sabab yuborish |
 | `GET /summary/{student_id}` | ikkalasi | Fan kesimida foizlar |
+| `POST /check-in` | talaba | "Men keldim" — joylashuvni dars manziliga solishtiradi |
+| `POST /location-ping` | talaba | Dars vaqtidagi joylashuv tekshiruvi (ilova ochilganda) |
+| `GET /violations?status=` | ikkalasi | Talabaga — o'zinikilar, xodimga — hammasi |
+| `GET /violations/pending-count` | xodim | Ko'rib chiqilishi kerak bo'lganlar soni |
+| `POST /violations/{id}/explain` | talaba | 12 soat ichida sababni tushuntirish |
+| `POST /violations/{id}/review` | xodim | Tushuntirishni qabul qilish / rad etish |
 
 Holatlar: `present` (keldi), `late` (kechikdi), `absent` (kelmadi),
 `excused` (sababli).
@@ -262,3 +268,38 @@ Muhim xatti-harakatlar:
 - Sabab tasdiqlansa holat avtomatik `excused` ga o'tadi.
 - Davomat foizi `GET /api/auth/students/{id}/academic-stats` va
   `GET /api/auth/analytics` javoblariga ham qo'shiladi.
+
+### Joylashuv nazorati
+
+Dars o'tiladigan nuqta ikki joydan olinadi: avval `lesson_schedules.latitude/
+longitude/radius_meters` (dars jadvalini yaratishda kiritiladi), u bo'sh bo'lsa
+`.env` dagi umumiy bino koordinatasi:
+
+```env
+CAMPUS_LATITUDE=41.311081
+CAMPUS_LONGITUDE=69.240562
+ATTENDANCE_RADIUS_METERS=150
+```
+
+Masofa haversine formulasi bilan hisoblanadi va `inside` / `outside` /
+`unknown` holatiga aylantiriladi (koordinata sozlanmagan bo'lsa `unknown` —
+hech kim jazolanmaydi).
+
+- **Talaba** "Men keldim" bosganda `POST /check-in` yuboriladi; natija ustozning
+  yo'qlama ro'yxatida har bir talaba yonida masofa sifatida ko'rinadi.
+- **Ustoz** yo'qlama saqlaganda o'z koordinatasini ham yuboradi; u dars joyidan
+  uzoqda bo'lsa javobda `teacher_location` ogohlantirishi qaytadi va ilova buni
+  ko'rsatadi.
+- **Dars vaqtida** ilova ochiq bo'lsa (yoki fondan qaytsa) `POST /location-ping`
+  yuboriladi. Talaba radiusdan tashqarida bo'lsa `location_violations` ga yozuv
+  tushadi, `location_violation` bildirishnomasi boradi va **12 soatlik**
+  tushuntirish muddati boshlanadi. Shu dars uchun takroriy ping yangi
+  ogohlantirish yaratmaydi (`already_reported`).
+- Talaba tushuntirish yuboradi (`pending` → `submitted`), xodim uni qabul qiladi
+  yoki rad etadi (`accepted` / `rejected`); muddat o'tsa `expired`. Har bir
+  qarordan keyin talabaga `violation_reviewed` bildirishnomasi boradi.
+
+> Diqqat: iOS va Android fon rejimida uzluksiz joylashuv yuborishni cheklaydi.
+> Shu sababli tekshiruv **ilova ochiq bo'lganda** bajariladi (kamida 15 daqiqa
+> oralatib). Serverdagi mantiq — aniqlash, muddat, bildirishnoma va tushuntirish
+> oqimi — ilovadan mustaqil ishlaydi.

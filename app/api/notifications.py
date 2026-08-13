@@ -72,6 +72,36 @@ def _format(n: NotificationLog) -> dict:
         title = "AI javobi"
         body = payload.get("question") or "Savolingizga javob berildi"
         icon = "ai"
+    elif event_type == "attendance_absent":
+        title = "Davomat belgilandi"
+        label = payload.get("status_label") or "Kelmadi"
+        body = (
+            f"{payload.get('subject', 'Dars')} — {label}"
+            + (f" ({payload.get('date')})" if payload.get("date") else "")
+        )
+        icon = "attendance"
+    elif event_type == "excuse_reviewed":
+        title = "Sabab ko'rib chiqildi"
+        state = "qabul qilindi" if payload.get("approved") else "rad etildi"
+        body = f"{payload.get('subject', 'Dars')} — sababingiz {state}"
+        if payload.get("comment"):
+            body += f". {payload['comment']}"
+        icon = "attendance"
+    elif event_type == "location_violation":
+        title = "Dars vaqtida o'quv binosida emassiz"
+        # Xabar matni serverda tayyorlanadi — muddat va fan nomi bilan.
+        body = payload.get("message") or (
+            "Dars vaqtida o'quv binosidan tashqarida ekanligingiz aniqlandi. "
+            "12 soat ichida sababini tushuntirib so'rov yuboring."
+        )
+        icon = "warning"
+    elif event_type == "violation_reviewed":
+        title = "Tushuntirishingiz ko'rib chiqildi"
+        state = "qabul qilindi" if payload.get("accepted") else "rad etildi"
+        body = f"Tushuntirishingiz {state}"
+        if payload.get("comment"):
+            body += f". {payload['comment']}"
+        icon = "warning"
     else:
         title = event_type.replace("_", " ").title()
         body = ""

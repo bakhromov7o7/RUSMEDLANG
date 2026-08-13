@@ -922,6 +922,130 @@ def run(base_url: str, admin_login: str, admin_password: str) -> int:  # noqa: C
               and "attendance_percent" in r.json(),
               "davomat xodim analitikasida", str(totals)[:200])
 
+    # ------------------------------------------------------- joylashuv nazorati
+    print("\n19b. Joylashuv nazorati")
+    # Bugungi kunga koordinatali dars — joriy vaqtni qamrab oladi.
+    r = client.post("/api/topics/schedules", headers=A, json={
+        "subject_id": subject_id, "student_group": group_name,
+        "day_of_week": date.today().isoweekday(),
+        "start_time": "00:01", "end_time": "23:59", "room": "GEO-1",
+        "latitude": 41.311081, "longitude": 69.240562, "radius_meters": 150,
+    })
+    geo_schedule = _extract_id(r, "schedule")
+    check(r.status_code in (200, 201) and geo_schedule,
+          "koordinatali dars yaratildi", _body(r, 200))
+
+    if geo_schedule and S2:
+        today_iso = date.today().isoformat()
+
+        r = client.post("/api/attendance/check-in", headers=S2, json={
+            "schedule_id": geo_schedule, "lesson_date": today_iso,
+            "latitude": 41.311500, "longitude": 69.240562,
+        })
+        check(r.status_code == 200 and r.json().get("location_status") == "inside",
+              "yaqindan check-in = dars joyida", _body(r, 200))
+
+        r = client.post("/api/attendance/check-in", headers=S2, json={
+            "schedule_id": geo_schedule, "lesson_date": today_iso,
+            "latitude": 41.350000, "longitude": 69.300000,
+        })
+        check(r.status_code == 200 and r.json().get("location_status") == "outside",
+              "uzoqdan check-in = dars joyida emas", _body(r, 200))
+
+        r = client.get("/api/attendance/roster", headers=A,
+                       params={"schedule_id": geo_schedule, "date": today_iso})
+        roster = r.json() if r.status_code == 200 else {}
+        target = next((x for x in roster.get("students", [])
+                       if x["student_user_id"] == student2_id), {})
+        check(roster.get("location_configured") is True,
+              "ro'yxatda dars joyi sozlangan deb ko'rsatiladi", str(roster)[:150])
+        check(target.get("location_status") == "outside"
+              and (target.get("distance_meters") or 0) > 1000,
+              "ustoz talabaning uzoqdaligini ko'radi", str(target)[:200])
+
+        # Dars vaqtida uzoqda — ogohlantirish
+        r = client.post("/api/attendance/location-ping", headers=S2, json={
+            "schedule_id": 0, "lesson_date": today_iso,
+            "latitude": 41.400000, "longitude": 69.400000,
+        })
+        ping = r.json() if r.status_code == 200 else {}
+        violation = ping.get("violation") or {}
+        check(r.status_code == 200 and ping.get("status") == "violation",
+              "dars vaqtida uzoqda -> ogohlantirish", _body(r, 200))
+        check(violation.get("hours_left", 0) > 11,
+              "tushuntirishga 12 soat berildi", str(violation)[:150])
+
+        r = client.post("/api/attendance/location-ping", headers=S2, json={
+            "schedule_id": 0, "lesson_date": today_iso,
+            "latitude": 41.400000, "longitude": 69.400000,
+        })
+        check(r.json().get("status") == "already_reported",
+              "takroriy ping yangi ogohlantirish yaratmaydi", _body(r, 150))
+
+        r = client.get("/api/notifications", headers=S2)
+        note = next((n for n in _as_list(r.json())
+                     if n.get("event_type") == "location_violation"), {})
+        check(bool(note), "talabaga ogohlantirish bildirishnomasi keldi", _body(r, 200))
+        check("12 soat" in (note.get("body") or ""),
+              "bildirishnomada 12 soatlik muddat yozilgan", str(note)[:220])
+
+        r = client.post("/api/attendance/location-ping", headers=S2, json={
+            "schedule_id": 0, "lesson_date": today_iso,
+            "latitude": 41.311100, "longitude": 69.240600,
+        })
+        check(r.json().get("status") == "inside",
+              "yaqinga qaytgach ogohlantirish yo'q", _body(r, 150))
+
+        violation_id = violation.get("id")
+        if violation_id:
+            r = client.post(f"/api/attendance/violations/{violation_id}/explain",
+                            headers=S, json={"explanation": "Begona tushuntirish"})
+            check(r.status_code == 403, "begona talaba tushuntira olmaydi", _body(r))
+
+            r = client.post(f"/api/attendance/violations/{violation_id}/explain",
+                            headers=S2, json={"explanation": "Shifokorga borgan edim."})
+            check(r.status_code == 200
+                  and r.json()["violation"]["status"] == "submitted",
+                  "talaba tushuntirish yubordi", _body(r, 200))
+
+            r = client.get("/api/attendance/violations", headers=A,
+                           params={"status": "submitted"})
+            check(r.status_code == 200 and any(
+                x["id"] == violation_id for x in _as_list(r.json())),
+                "xodim tushuntirishni ko'radi", _body(r, 150))
+
+            r = client.post(f"/api/attendance/violations/{violation_id}/review",
+                            headers=S2, json={"accept": True})
+            check(r.status_code == 403, "talaba o'zi qabul qila olmaydi", _body(r))
+
+            r = client.post(f"/api/attendance/violations/{violation_id}/review",
+                            headers=A, json={"accept": True, "comment": "Spravka bor"})
+            check(r.status_code == 200
+                  and r.json()["violation"]["status"] == "accepted",
+                  "xodim tushuntirishni qabul qildi", _body(r, 200))
+
+            r = client.get("/api/notifications", headers=S2)
+            check(any(n.get("event_type") == "violation_reviewed"
+                      for n in _as_list(r.json())),
+                  "javob bildirishnomasi keldi", _body(r, 150))
+
+        # Ustoz joylashuvi yo'qlamada yoziladi
+        r = client.post("/api/attendance/mark", headers=A, json={
+            "schedule_id": geo_schedule, "lesson_date": today_iso,
+            "records": [{"student_user_id": student2_id, "status": "present"}],
+            "latitude": 41.400000, "longitude": 69.400000,
+        })
+        check(r.status_code == 200
+              and r.json()["teacher_location"]["location_status"] == "outside",
+              "ustoz uzoqdan yo'qlama qilgani qayd etildi", _body(r, 220))
+
+        r = client.get("/api/attendance/violations", headers=S2)
+        check(r.status_code == 200 and all(
+            x["student_user_id"] == student2_id for x in _as_list(r.json())),
+            "talaba faqat o'z ogohlantirishlarini ko'radi", _body(r, 150))
+
+        client.delete(f"/api/topics/schedules/{geo_schedule}", headers=A)
+
     print("\n20. Ariza rad etish oqimi")
     rej_login = f"e2e.rad.{suffix}"
     r = client.post("/api/auth/register", json={

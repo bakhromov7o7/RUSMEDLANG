@@ -379,6 +379,11 @@ class LessonSchedule(Base):
     end_time = Column(String(10), nullable=False)
     room = Column(String(50), nullable=False)
     teacher_name = Column(String(255))
+    # Dars o'tiladigan joy — davomatda joylashuvni tekshirish uchun.
+    # Bo'sh bo'lsa `config.CAMPUS_*` qiymatlari ishlatiladi.
+    latitude = Column(Float)
+    longitude = Column(Float)
+    radius_meters = Column(Integer)
     created_at = Column(DateTime(timezone=True), default=utcnow, nullable=False)
 
     __table_args__ = (
@@ -621,6 +626,12 @@ class AttendanceRecord(Base):
     excuse_reviewed_by_user_id = Column(BigInteger, ForeignKey("users.id", ondelete="SET NULL"))
     excuse_reviewed_at = Column(DateTime(timezone=True))
 
+    # Yo'qlama qilingan paytdagi ustoz joylashuvi — soxta yo'qlamani
+    # aniqlash uchun.
+    marked_latitude = Column(Float)
+    marked_longitude = Column(Float)
+    marked_distance_meters = Column(Float)
+
     created_at = Column(DateTime(timezone=True), default=utcnow, nullable=False)
     updated_at = Column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
 
@@ -632,4 +643,105 @@ class AttendanceRecord(Base):
             "student_user_id", "schedule_id", "lesson_date", name="_attendance_lesson_uc"
         ),
         Index("ix_attendance_group_date", "student_group", "lesson_date"),
+    )
+
+
+class LocationStatus(enum.Enum):
+    unknown = "unknown"   # dars joyi sozlanmagan — tekshirib bo'lmadi
+    inside = "inside"     # belgilangan radius ichida
+    outside = "outside"   # radiusdan tashqarida
+
+
+class AttendanceCheckIn(Base):
+    """Talabaning "Men keldim" belgisi va o'sha paytdagi joylashuvi.
+
+    Davomatning o'zi (`AttendanceRecord`) ustoz tomonidan qo'yiladi; bu jadval
+    esa faqat talabaning bildirgan joylashuvini saqlaydi. Shu sababli
+    check-in davomatni avtomatik "keldi" qilib qo'ymaydi — u ustozga qaror
+    uchun ma'lumot beradi.
+    """
+
+    __tablename__ = "attendance_check_ins"
+
+    id = Column(PrimaryKey, primary_key=True)
+    student_user_id = Column(
+        BigInteger, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    schedule_id = Column(
+        BigInteger, ForeignKey("lesson_schedules.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    lesson_date = Column(Date, nullable=False, index=True)
+    latitude = Column(Float, nullable=False)
+    longitude = Column(Float, nullable=False)
+    # Dars nuqtasigacha bo'lgan masofa (metr). Nuqta sozlanmagan bo'lsa NULL.
+    distance_meters = Column(Float)
+    status = Column(
+        Enum(LocationStatus, name="location_status"),
+        default=LocationStatus.unknown,
+        nullable=False,
+    )
+    created_at = Column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+    student = relationship("User")
+
+    __table_args__ = (
+        UniqueConstraint(
+            "student_user_id", "schedule_id", "lesson_date", name="_attendance_checkin_uc"
+        ),
+    )
+
+
+class ViolationStatus(enum.Enum):
+    pending = "pending"      # tushuntirish kutilmoqda
+    submitted = "submitted"  # talaba tushuntirdi, xodim ko'rib chiqmoqda
+    accepted = "accepted"    # sabab qabul qilindi
+    rejected = "rejected"    # sabab rad etildi
+    expired = "expired"      # 12 soat ichida javob berilmadi
+
+
+class LocationViolation(Base):
+    """Dars vaqtida talaba dars joyidan tashqarida aniqlangani.
+
+    Talabaga bildirishnoma boradi va 12 soat ichida tushuntirish yuborishi
+    so'raladi. Muddat o'tsa holat `expired` ga o'tadi.
+    """
+
+    __tablename__ = "location_violations"
+
+    id = Column(PrimaryKey, primary_key=True)
+    student_user_id = Column(
+        BigInteger, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    schedule_id = Column(
+        BigInteger, ForeignKey("lesson_schedules.id", ondelete="SET NULL"), index=True
+    )
+    subject_id = Column(BigInteger, ForeignKey("subjects.id", ondelete="SET NULL"))
+    lesson_date = Column(Date, nullable=False, index=True)
+    detected_at = Column(DateTime(timezone=True), default=utcnow, nullable=False)
+    latitude = Column(Float)
+    longitude = Column(Float)
+    distance_meters = Column(Float)
+
+    status = Column(
+        Enum(ViolationStatus, name="violation_status"),
+        default=ViolationStatus.pending,
+        nullable=False,
+        index=True,
+    )
+    # Tushuntirish shu vaqtgacha yuborilishi kerak (aniqlangandan +12 soat).
+    explain_deadline = Column(DateTime(timezone=True), nullable=False)
+    explanation = Column(Text)
+    explained_at = Column(DateTime(timezone=True))
+    reviewed_by_user_id = Column(BigInteger, ForeignKey("users.id", ondelete="SET NULL"))
+    reviewed_at = Column(DateTime(timezone=True))
+    review_comment = Column(Text)
+
+    student = relationship("User", foreign_keys=[student_user_id])
+    subject = relationship("Subject")
+
+    __table_args__ = (
+        # Bitta dars uchun bir marta ogohlantiriladi — takror yozuv bo'lmaydi.
+        UniqueConstraint(
+            "student_user_id", "schedule_id", "lesson_date", name="_location_violation_uc"
+        ),
     )
