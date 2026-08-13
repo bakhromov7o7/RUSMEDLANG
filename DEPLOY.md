@@ -469,7 +469,7 @@ sudo -u ustozai .venv/bin/python scripts/e2e_test.py \
   --admin-login admin --admin-password 'PAROL'
 ```
 
-`182/182 test o'tdi` chiqishi kerak.
+`193/193 test o'tdi` chiqishi kerak.
 
 ---
 

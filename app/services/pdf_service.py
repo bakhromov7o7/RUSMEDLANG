@@ -283,3 +283,84 @@ class PDFService:
         path = self._temp_path("attendance_")
         pdf.output(path)
         return path
+
+    def generate_analytics_report(
+        self, groups: list, subjects: list, at_risk: list
+    ) -> str:
+        """Guruhlar, fanlar va e'tibor talab qiladigan talabalar bo'yicha hisobot."""
+        pdf, font = self._create_pdf()
+        pdf.add_page()
+
+        pdf.set_font(font, "B", 16)
+        pdf.cell(0, 10, self._clean_text("O'quv jarayoni tahlili"), new_x="LMARGIN", new_y="NEXT")
+        pdf.ln(2)
+
+        def table(title: str, headers: list, widths: list, rows: list) -> None:
+            if not rows:
+                return
+            pdf.set_font(font, "B", 12)
+            pdf.cell(0, 8, self._clean_text(title), new_x="LMARGIN", new_y="NEXT")
+            pdf.set_font(font, "B", 9)
+            for header, width in zip(headers, widths):
+                pdf.cell(width, 7, self._clean_text(header), border=1, align="C")
+            pdf.ln()
+            pdf.set_font(font, "", 9)
+            for row in rows:
+                for value, width in zip(row, widths):
+                    pdf.cell(width, 7, self._clean_text(value), border=1)
+                pdf.ln()
+            pdf.ln(4)
+
+        table(
+            "Guruhlar kesimi",
+            ["Guruh", "Talaba", "O'rtacha", "Davomat", "Vazifa"],
+            [55, 25, 30, 30, 30],
+            [
+                [
+                    g.get("student_group", ""),
+                    str(g.get("students", 0)),
+                    f"{g.get('average_score', 0)}/5",
+                    f"{g.get('attendance_percent', 0)}%",
+                    f"{g.get('homework_percent', 0)}%",
+                ]
+                for g in groups
+            ],
+        )
+
+        table(
+            "Fanlar kesimi",
+            ["Fan", "Mavzu", "Test", "O'rtacha", "Davomat"],
+            [65, 22, 22, 30, 30],
+            [
+                [
+                    s.get("subject_title", ""),
+                    str(s.get("topics", 0)),
+                    str(s.get("quiz_attempts", 0)),
+                    f"{s.get('average_score', 0)}/5",
+                    f"{s.get('attendance_percent', 0)}%",
+                ]
+                for s in subjects
+            ],
+        )
+
+        if at_risk:
+            pdf.set_font(font, "B", 12)
+            pdf.cell(0, 8, self._clean_text("E'tibor talab qiladigan talabalar"),
+                     new_x="LMARGIN", new_y="NEXT")
+            pdf.set_font(font, "", 9)
+            # Kursorni chap chekkaga qaytaramiz: jadvaldan keyin u o'ngda
+            # qolib ketsa, `multi_cell` "joy yetmadi" xatosini beradi.
+            usable = pdf.w - pdf.l_margin - pdf.r_margin
+            for student in at_risk:
+                line = (
+                    f"{student.get('full_name', '')} "
+                    f"({student.get('student_group') or 'guruhsiz'}) — "
+                    + "; ".join(student.get("reasons", []))
+                )
+                pdf.set_x(pdf.l_margin)
+                pdf.multi_cell(usable, 6, self._clean_text(line))
+            pdf.ln(2)
+
+        path = self._temp_path("analytics_")
+        pdf.output(path)
+        return path

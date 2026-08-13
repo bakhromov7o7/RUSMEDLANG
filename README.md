@@ -106,7 +106,7 @@ python3 scripts/e2e_test.py --admin-login admin --admin-password '...'
 `e2e_test.py` fan/mavzu/material/jadval/lug'at/e'lon/vazifa/guruh CRUD, baholash,
 chat, guruh chati, bildirishnomalar, arena, imtihon, profil, avatar, xodim
 analitikasi, fayl yuklash cheklovlari va test oqimini bosib chiqadi
-(182 ta tekshiruv). AI kaliti bo'lmasa AI'ga bog'liq qismlar o'tkazib yuboriladi.
+(193 ta tekshiruv). AI kaliti bo'lmasa AI'ga bog'liq qismlar o'tkazib yuboriladi.
 
 ## Imtihon rejimi (`/api/exam`)
 
@@ -137,6 +137,20 @@ Muhim xatti-harakatlar:
   tugagach urinish `expired` bo'ladi, javoblar esa baholanadi.
 - **Bir vaqtda bitta imtihon** — ochiq imtihon bo'lsa yangisi 409 beradi.
 - To'g'ri javoblar imtihon davomida **klientga yuborilmaydi**.
+
+## Chuqurlashtirilgan tahlil (`/api/analytics`)
+
+Xodim panelidagi "Tahlil" bo'limi shu modul orqali ishlaydi. Barcha
+hisob-kitob bir necha yig'ma so'rovda bajariladi (N+1 yo'q).
+
+| Endpoint | Kim | Vazifasi |
+|---|---|---|
+| `GET /groups` | xodim | Guruhlar kesimi: o'rtacha ball, davomat, vazifa foizi. Eng zaif guruh ro'yxat boshida |
+| `GET /subjects` | xodim | Fanlar kesimi: mavzular, testlar, imtihonlar, o'rtacha ball, davomat |
+| `GET /at-risk` | xodim | Davomati (<75%) yoki natijasi (<3.0) past talabalar — har biri uchun **sabab** ko'rsatiladi |
+| `GET /activity?days=` | xodim | Kunlik faollik: test, vazifa, davomat, AI savollari (Toshkent vaqti bo'yicha) |
+| `GET /teachers` | **superadmin** | Har bir xodim nima qilgani: mavzu, vazifa, baholangan javob, yo'qlama |
+| `GET /report/pdf` | xodim | Yuqoridagilarni jamlagan PDF hisobot |
 
 ## Xodim paneli uchun analitika
 

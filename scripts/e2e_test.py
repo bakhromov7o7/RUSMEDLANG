@@ -384,6 +384,55 @@ def run(base_url: str, admin_login: str, admin_password: str) -> int:  # noqa: C
     check(r.status_code == 200, "talaba geymifikatsiyani ko'radi", _body(r, 150))
 
     # ------------------------------------------------------------------ chat
+    # --------------------------------------------------------------- tahlil
+    print("\n11b. Chuqurlashtirilgan tahlil")
+    r = client.get("/api/analytics/groups", headers=A)
+    groups_data = _as_list(r.json()) if r.status_code == 200 else []
+    check(r.status_code == 200 and groups_data, "guruhlar kesimi", _body(r, 200))
+    if groups_data:
+        row = groups_data[0]
+        check(all(k in row for k in (
+            "student_group", "students", "average_score", "attendance_percent",
+            "homework_percent", "accuracy")),
+            "guruh yozuvida barcha ko'rsatkichlar bor", str(row)[:200])
+
+    r = client.get("/api/analytics/subjects", headers=A)
+    subjects_data = _as_list(r.json()) if r.status_code == 200 else []
+    check(r.status_code == 200 and any(x["subject_id"] == subject_id for x in subjects_data),
+          "fanlar kesimida yangi fan bor", _body(r, 200))
+
+    r = client.get("/api/analytics/at-risk", headers=A)
+    check(r.status_code == 200 and isinstance(r.json(), list),
+          "e'tibor talab qiladigan talabalar ro'yxati", _body(r, 150))
+    if r.status_code == 200 and r.json():
+        check(all(x.get("reasons") for x in r.json()),
+              "har bir talabada sabab ko'rsatilgan", str(r.json()[0])[:200])
+
+    r = client.get("/api/analytics/activity", headers=A, params={"days": 14})
+    activity = r.json() if r.status_code == 200 else {}
+    check(r.status_code == 200 and len(activity.get("series", [])) == 14,
+          "kunlik faollik 14 nuqta", _body(r, 150))
+    check(all(k in (activity.get("series") or [{}])[0]
+              for k in ("date", "quizzes", "submissions", "attendance", "ai_questions")),
+          "faollik yozuvida barcha turlar bor", str(activity.get("series", [{}])[0])[:150])
+
+    r = client.get("/api/analytics/teachers", headers=A)
+    teachers_data = _as_list(r.json()) if r.status_code == 200 else []
+    check(r.status_code == 200 and teachers_data, "xodimlar faoliyati", _body(r, 200))
+    if teachers_data:
+        check(all(k in teachers_data[0] for k in (
+            "topics", "homeworks", "graded_submissions", "attendance_marked")),
+            "xodim yozuvida faoliyat sonlari bor", str(teachers_data[0])[:200])
+
+    r = client.get("/api/analytics/report/pdf", headers=A)
+    check(r.status_code == 200
+          and r.headers.get("content-type", "").startswith("application/pdf"),
+          "tahlil PDF hisoboti", _body(r, 120))
+
+    # Rol chegaralari
+    r = client.get("/api/analytics/groups", headers=S)
+    check(r.status_code == 403, "talaba tahlilni ko'ra olmaydi", _body(r))
+
     print("\n12. Chat")
     r = client.post("/api/chat/send", headers=S,
                     json={"recipient_id": admin_id, "message_text": "Assalomu alaykum, ustoz!"})
