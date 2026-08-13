@@ -2,7 +2,7 @@ import enum
 from datetime import datetime, timezone
 
 from sqlalchemy import (
-    Column, BigInteger, String, Boolean, DateTime, Enum,
+    Column, BigInteger, String, Boolean, Date, DateTime, Enum,
     ForeignKey, Text, Integer, JSON, UniqueConstraint, Float, Index
 )
 from sqlalchemy.orm import relationship
@@ -562,4 +562,74 @@ class ExamQuestion(Base):
 
     __table_args__ = (
         UniqueConstraint("exam_attempt_id", "question_order", name="_exam_question_uc"),
+    )
+
+
+class AttendanceStatus(enum.Enum):
+    present = "present"   # keldi
+    absent = "absent"     # kelmadi
+    late = "late"         # kechikdi
+    excused = "excused"   # sababli
+
+
+class ExcuseStatus(enum.Enum):
+    none = "none"          # sabab yuborilmagan
+    pending = "pending"    # ko'rib chiqilmoqda
+    approved = "approved"  # tasdiqlangan
+    rejected = "rejected"  # rad etilgan
+
+
+class AttendanceRecord(Base):
+    """Bitta talabaning bitta darsdagi davomati.
+
+    Davomat dars kesimida olinadi (sana + jadvaldagi juftlik), shuning uchun
+    fan bo'yicha foiz chiqadi va talaba aynan qaysi darsni qoldirganini
+    ko'radi.
+
+    `subject_id` va `student_group` — nusxa: jadval o'chirilsa yoki talaba
+    boshqa guruhga o'tsa ham tarix va statistika buzilmaydi.
+    """
+
+    __tablename__ = "attendance_records"
+
+    id = Column(PrimaryKey, primary_key=True)
+    student_user_id = Column(
+        BigInteger, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    schedule_id = Column(
+        BigInteger, ForeignKey("lesson_schedules.id", ondelete="SET NULL"), index=True
+    )
+    subject_id = Column(BigInteger, ForeignKey("subjects.id", ondelete="SET NULL"), index=True)
+    student_group = Column(String(100), index=True)
+    lesson_date = Column(Date, nullable=False, index=True)
+    status = Column(
+        Enum(AttendanceStatus, name="attendance_status"),
+        default=AttendanceStatus.present,
+        nullable=False,
+    )
+    note = Column(Text)
+    marked_by_user_id = Column(BigInteger, ForeignKey("users.id", ondelete="SET NULL"))
+
+    # Sabab shu yozuvning ustida yashaydi — u har doim aynan bitta darsga tegishli.
+    excuse_status = Column(
+        Enum(ExcuseStatus, name="excuse_status"),
+        default=ExcuseStatus.none,
+        nullable=False,
+        index=True,
+    )
+    excuse_reason = Column(Text)
+    excuse_reviewed_by_user_id = Column(BigInteger, ForeignKey("users.id", ondelete="SET NULL"))
+    excuse_reviewed_at = Column(DateTime(timezone=True))
+
+    created_at = Column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at = Column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+    student = relationship("User", foreign_keys=[student_user_id])
+    subject = relationship("Subject")
+
+    __table_args__ = (
+        UniqueConstraint(
+            "student_user_id", "schedule_id", "lesson_date", name="_attendance_lesson_uc"
+        ),
+        Index("ix_attendance_group_date", "student_group", "lesson_date"),
     )

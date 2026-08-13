@@ -28,6 +28,7 @@ from app.database import get_db
 from app.models import (
     ApplicationStatus,
     ClinicalArenaAttempt,
+    ExcuseStatus,
     HomeworkSubmission,
     LessonSchedule,
     NotificationLog,
@@ -536,6 +537,28 @@ async def staff_analytics(
         ),
     }
 
+    # Davomat ko'rsatkichlari — aylanma importni oldini olish uchun shu yerda.
+    from app.api.attendance import unmarked_lessons_today
+    from app.models import AttendanceRecord, AttendanceStatus
+
+    totals["unmarked_lessons_today"] = await unmarked_lessons_today(db)
+    totals["pending_excuses"] = await _count(
+        AttendanceRecord, AttendanceRecord.excuse_status == ExcuseStatus.pending
+    )
+
+    attendance_rows = (
+        await db.execute(select(AttendanceRecord.status))
+    ).scalars().all()
+    attendance_total = len(attendance_rows)
+    attendance_ok = sum(
+        1
+        for status in attendance_rows
+        if status in (AttendanceStatus.present, AttendanceStatus.late, AttendanceStatus.excused)
+    )
+    attendance_overall = (
+        round(attendance_ok / attendance_total * 100, 1) if attendance_total else 0.0
+    )
+
     # Haftalik o'rtacha natija (5 ballik shkalada) — oxirgi `weeks` hafta.
     now = utcnow()
     window_start = now - timedelta(weeks=weeks)
@@ -615,6 +638,7 @@ async def staff_analytics(
         "average_accuracy": (
             round(overall_correct / overall_total * 100, 1) if overall_total else 0.0
         ),
+        "attendance_percent": attendance_overall,
         "trend": trend,
         "top_students": top[:5],
     }
@@ -907,6 +931,11 @@ async def student_academic_stats(
     else:
         standing = "Qoniqarsiz / Needs Improvement" if metrics else "Noma'lum / No grades yet"
 
+    # Davomat — aylanma importni oldini olish uchun shu yerda.
+    from app.api.attendance import attendance_percent
+
+    att_percent, att_attended, att_total = await attendance_percent(db, student_id)
+
     return {
         "student_id": student_id,
         "quiz_avg": quiz_avg,
@@ -917,6 +946,9 @@ async def student_academic_stats(
         "standing": standing,
         "total_quizzes_taken": total_quizzes,
         "total_homeworks_graded": len(hw_grades),
+        "attendance_percent": att_percent,
+        "attendance_present": att_attended,
+        "attendance_total": att_total,
     }
 
 

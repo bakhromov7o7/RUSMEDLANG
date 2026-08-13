@@ -211,3 +211,75 @@ class PDFService:
         path = self._temp_path("topic_")
         pdf.output(path)
         return path
+
+    def generate_attendance_report(self, report: dict) -> str:
+        """Guruh davomati jadvali.
+
+        `report` — `app/api/attendance.py::_group_report` qaytargan tuzilma.
+        Sanalar ko'p bo'lsa sahifaga sig'ishi uchun ular bo'laklarga bo'linadi.
+        """
+        pdf, font = self._create_pdf()
+        pdf.add_page(orientation="L")
+
+        group = self._clean_text(report.get("student_group") or "Guruh")
+        period = f"{report.get('from', '')} — {report.get('to', '')}"
+
+        pdf.set_font(font, "B", 15)
+        pdf.cell(0, 10, self._clean_text(f"Davomat: {group}"), new_x="LMARGIN", new_y="NEXT")
+        pdf.set_font(font, "", 10)
+        pdf.cell(0, 6, self._clean_text(f"Davr: {period}"), new_x="LMARGIN", new_y="NEXT")
+        pdf.cell(
+            0, 6,
+            self._clean_text(f"Guruh bo'yicha o'rtacha: {report.get('percent', 0)}%"),
+            new_x="LMARGIN", new_y="NEXT",
+        )
+
+        legend = report.get("legend") or {}
+        if legend:
+            pdf.set_font(font, "", 9)
+            text = "   ".join(f"{mark} = {label}" for mark, label in legend.items())
+            pdf.cell(0, 6, self._clean_text(text), new_x="LMARGIN", new_y="NEXT")
+        pdf.ln(2)
+
+        students = report.get("students") or []
+        dates = report.get("dates") or []
+        if not students:
+            pdf.set_font(font, "", 11)
+            pdf.cell(0, 8, self._clean_text("Bu davrda talaba yo'q."), new_x="LMARGIN", new_y="NEXT")
+            path = self._temp_path("attendance_")
+            pdf.output(path)
+            return path
+
+        name_width = 60
+        mark_width = 8
+        summary_width = 26
+        # Bir sahifaga sig'adigan sana ustunlari soni (A4 landscape ≈ 297mm).
+        per_page = max(int((277 - name_width - summary_width) / mark_width), 1)
+        chunks = [dates[i:i + per_page] for i in range(0, len(dates), per_page)] or [[]]
+
+        for index, chunk in enumerate(chunks):
+            if index > 0:
+                pdf.add_page(orientation="L")
+
+            pdf.set_font(font, "B", 8)
+            pdf.cell(name_width, 7, self._clean_text("Talaba"), border=1)
+            for day in chunk:
+                # Faqat kun-oy — to'liq sana ustunga sig'maydi.
+                label = day[8:10] + "." + day[5:7]
+                pdf.cell(mark_width, 7, label, border=1, align="C")
+            pdf.cell(summary_width, 7, self._clean_text("Davomat"), border=1, align="C",
+                     new_x="LMARGIN", new_y="NEXT")
+
+            pdf.set_font(font, "", 8)
+            for student in students:
+                marks = student.get("marks") or {}
+                pdf.cell(name_width, 7, self._clean_text(student.get("full_name", "")), border=1)
+                for day in chunk:
+                    pdf.cell(mark_width, 7, self._clean_text(marks.get(day, "")), border=1, align="C")
+                summary = f"{student.get('attended', 0)}/{student.get('total', 0)}  {student.get('percent', 0)}%"
+                pdf.cell(summary_width, 7, self._clean_text(summary), border=1, align="C",
+                         new_x="LMARGIN", new_y="NEXT")
+
+        path = self._temp_path("attendance_")
+        pdf.output(path)
+        return path

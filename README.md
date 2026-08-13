@@ -105,7 +105,7 @@ python3 scripts/e2e_test.py --admin-login admin --admin-password '...'
 `e2e_test.py` fan/mavzu/material/jadval/lug'at/e'lon/vazifa/guruh CRUD, baholash,
 chat, guruh chati, bildirishnomalar, arena, imtihon, profil, avatar, xodim
 analitikasi, fayl yuklash cheklovlari va test oqimini bosib chiqadi
-(149 ta tekshiruv). AI kaliti bo'lmasa AI'ga bog'liq qismlar o'tkazib yuboriladi.
+(182 ta tekshiruv). AI kaliti bo'lmasa AI'ga bog'liq qismlar o'tkazib yuboriladi.
 
 ## Imtihon rejimi (`/api/exam`)
 
@@ -174,7 +174,8 @@ profil maydonlari qaytariladi).
 ```
 app/
   core/        config.py (env), security.py (JWT/parol/rollar), files.py (yuklash)
-  api/         auth, topics, quiz, exam, homework, chat, arena, notifications,
+  api/         auth, topics, quiz, exam, attendance, homework, chat, arena,
+               notifications,
                announcements, profile
                _shared.py — umumiy yordamchilar (sana, AI savollari, davomiylik)
   services/    ai_service.py (Groq/OpenAI, async), pdf_service.py
@@ -194,3 +195,37 @@ assets/fonts/  PDF uchun Unicode font (README ga qarang)
 - **Kunlik AI limiti:** `AI_QUESTION_DAILY_LIMIT` (Toshkent vaqti bo'yicha).
 - **PDF fontlari:** kirill uchun `assets/fonts/README.md` ga qarang. Font
   topilmasa PDF baribir yaratiladi, lekin harflar `?` bilan almashadi.
+
+## Davomat (`/api/attendance`)
+
+Davomat **har bir dars uchun** olinadi: sana + dars jadvalidagi juftlik. Shu
+sababli fan kesimida foiz chiqadi va talaba aynan qaysi darsni qoldirganini
+ko'radi.
+
+| Endpoint | Kim | Vazifasi |
+|---|---|---|
+| `GET /lessons?date=&student_group=` | xodim | Shu kundagi darslar va belgilanish holati |
+| `GET /roster?schedule_id=&date=` | xodim | Dars uchun talabalar va joriy holatlari |
+| `POST /mark` | xodim | Yo'qlamani saqlash (bitta so'rovda) |
+| `GET /group?student_group=&from=&to=` | xodim | Guruh hisoboti (talabalar × sanalar) |
+| `GET /group/report/pdf` | xodim | Xuddi shu hisobot PDF sifatida |
+| `GET /excuses`, `GET /excuses/pending-count` | xodim | Sabab so'rovlari navbati |
+| `POST /excuses/{id}/review` | xodim | Sababni tasdiqlash / rad etish |
+| `GET /my?from=&to=` | talaba | O'z davomati: xulosa va yozuvlar |
+| `POST /excuses` | talaba | Qoldirilgan dars uchun sabab yuborish |
+| `GET /summary/{student_id}` | ikkalasi | Fan kesimida foizlar |
+
+Holatlar: `present` (keldi), `late` (kechikdi), `absent` (kelmadi),
+`excused` (sababli).
+
+Muhim xatti-harakatlar:
+
+- **Foizga** `present`, `late` va `excused` "kelgan" deb hisoblanadi — sababli
+  qoldirish talabani jazolamaydi.
+- Kelajakdagi dars uchun yo'qlama qilib bo'lmaydi; sana jadvaldagi hafta kuniga
+  mos kelishi shart.
+- Talaba `absent`/`late` deb belgilansa unga bildirishnoma boradi
+  (`attendance_absent`), sabab ko'rib chiqilgach — `excuse_reviewed`.
+- Sabab tasdiqlansa holat avtomatik `excused` ga o'tadi.
+- Davomat foizi `GET /api/auth/students/{id}/academic-stats` va
+  `GET /api/auth/analytics` javoblariga ham qo'shiladi.

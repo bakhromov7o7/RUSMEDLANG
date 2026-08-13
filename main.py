@@ -93,6 +93,7 @@ app.mount("/uploads", StaticFiles(directory=config.UPLOAD_DIR), name="uploads")
 from app.api import (  # noqa: E402  — routerlar app yaratilgandan keyin ulanadi
     announcements,
     arena,
+    attendance,
     auth,
     chat,
     exam,
@@ -107,6 +108,7 @@ app.include_router(auth.router, prefix="/api/auth", tags=["Authentication"])
 app.include_router(topics.router, prefix="/api/topics", tags=["Topics"])
 app.include_router(quiz.router, prefix="/api/quiz", tags=["Quiz"])
 app.include_router(exam.router, prefix="/api/exam", tags=["Exam"])
+app.include_router(attendance.router, prefix="/api/attendance", tags=["Attendance"])
 app.include_router(homework.router, prefix="/api/homework", tags=["Homework"])
 app.include_router(arena.router, prefix="/api/topics/arena", tags=["Clinical Arena"])
 app.include_router(chat.router, prefix="/api/chat", tags=["Chat"])

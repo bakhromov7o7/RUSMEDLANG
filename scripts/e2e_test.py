@@ -15,6 +15,7 @@ AI kaliti bo'lmasa AI'ga bog'liq testlar o'tkazib yuboriladi (xatolik emas).
 
 import argparse
 import base64
+from datetime import date, timedelta
 import sys
 import time
 import uuid
@@ -678,6 +679,200 @@ def run(base_url: str, admin_login: str, admin_password: str) -> int:  # noqa: C
         check(r.status_code == 200, "xodim profili yangilandi", _body(r))
 
     # -------------------------------------------------------------- arizalar
+    # ----------------------------------------------------------------- davomat
+    print("\n19a. Davomat")
+    # Jadval yaratganimizda kun 2 ga o'zgartirilgan edi — shu kunga to'g'ri
+    # keladigan eng yaqin o'tgan sanani topamiz.
+    today = date.today()
+    lesson_day = 2  # seshanba (yuqorida jadval shu kunga ko'chirilgan)
+    lesson_date = today - timedelta(days=(today.isoweekday() - lesson_day) % 7)
+    if lesson_date > today:
+        lesson_date -= timedelta(days=7)
+
+    r = client.get("/api/attendance/lessons", headers=A,
+                   params={"date": lesson_date.isoformat(), "student_group": group_name})
+    lessons = _as_list(r.json()) if r.status_code == 200 else []
+    mine = next((x for x in lessons if x["schedule_id"] == schedule_id), None)
+    check(r.status_code == 200 and mine is not None,
+          "shu kundagi darslar ro'yxati", _body(r, 200))
+
+    if mine:
+        check(mine.get("is_marked") is False, "dars hali belgilanmagan", str(mine)[:150])
+
+        r = client.get("/api/attendance/roster", headers=A,
+                       params={"schedule_id": schedule_id, "date": lesson_date.isoformat()})
+        roster = r.json() if r.status_code == 200 else {}
+        students_in = roster.get("students", [])
+        check(r.status_code == 200 and any(
+            s["student_user_id"] == student2_id for s in students_in),
+            "guruh talabalari ro'yxatda", _body(r, 200))
+        check(all(s["status"] is None for s in students_in),
+              "boshda hech kim belgilanmagan", str(students_in)[:150])
+
+        r = client.get("/api/attendance/roster", headers=S,
+                       params={"schedule_id": schedule_id, "date": lesson_date.isoformat()})
+        check(r.status_code == 403, "talaba ro'yxatni ko'ra olmaydi", _body(r))
+
+        # Talaba 2 shu guruhda — uni "kelmadi" deb belgilaymiz.
+        r = client.post("/api/attendance/mark", headers=A, json={
+            "schedule_id": schedule_id,
+            "lesson_date": lesson_date.isoformat(),
+            "records": [{"student_user_id": student2_id, "status": "absent",
+                         "note": "Sababsiz"}],
+        })
+        check(r.status_code == 200 and r.json().get("saved") == 1,
+              "davomat belgilandi", _body(r, 200))
+
+        r = client.post("/api/attendance/mark", headers=S, json={
+            "schedule_id": schedule_id, "lesson_date": lesson_date.isoformat(),
+            "records": [{"student_user_id": student2_id, "status": "present"}],
+        })
+        check(r.status_code == 403, "talaba davomat belgilay olmaydi", _body(r))
+
+        r = client.post("/api/attendance/mark", headers=A, json={
+            "schedule_id": schedule_id,
+            "lesson_date": (today + timedelta(days=7)).isoformat(),
+            "records": [{"student_user_id": student2_id, "status": "present"}],
+        })
+        check(r.status_code == 400, "kelajakdagi dars rad etildi", _body(r))
+
+        r = client.post("/api/attendance/mark", headers=A, json={
+            "schedule_id": schedule_id,
+            "lesson_date": (lesson_date + timedelta(days=1)).isoformat(),
+            "records": [{"student_user_id": student2_id, "status": "present"}],
+        })
+        check(r.status_code == 400, "hafta kuniga mos kelmagan sana rad etildi", _body(r))
+
+        r = client.post("/api/attendance/mark", headers=A, json={
+            "schedule_id": schedule_id, "lesson_date": lesson_date.isoformat(),
+            "records": [{"student_user_id": admin_id, "status": "present"}],
+        })
+        check(r.status_code == 400, "begona talabani belgilash rad etildi", _body(r))
+
+        r = client.get("/api/attendance/lessons", headers=A,
+                       params={"date": lesson_date.isoformat(), "student_group": group_name})
+        marked = next((x for x in _as_list(r.json()) if x["schedule_id"] == schedule_id), {})
+        check(marked.get("is_marked") is True and marked.get("marked_count") == 1,
+              "dars belgilangan deb ko'rinadi", str(marked)[:150])
+
+        # Talaba o'z davomatini ko'radi
+        if S2:
+            r = client.get("/api/attendance/my", headers=S2)
+            mine_att = r.json() if r.status_code == 200 else {}
+            records = mine_att.get("records", [])
+            record_id = records[0]["id"] if records else None
+            check(r.status_code == 200 and len(records) == 1,
+                  "talaba o'z davomatini ko'radi", _body(r, 200))
+            check(mine_att.get("summary", {}).get("percent") == 0.0
+                  and mine_att.get("summary", {}).get("absent") == 1,
+                  "foiz hisoblandi", str(mine_att.get("summary"))[:150])
+            check(bool(mine_att.get("summary", {}).get("subjects")),
+                  "fan kesimida tahlil bor", str(mine_att.get("summary", {}).get("subjects"))[:150])
+
+            r = client.get("/api/notifications", headers=S2)
+            check(r.status_code == 200 and any(
+                n.get("event_type") == "attendance_absent" for n in _as_list(r.json())),
+                "qoldirilgan dars uchun bildirishnoma keldi", _body(r, 200))
+
+            # Sabab yuborish
+            if record_id:
+                r = client.post("/api/attendance/excuses", headers=S2, json={
+                    "record_id": record_id, "reason": "Kasal bo'lib qoldim, spravka bor.",
+                })
+                check(r.status_code == 201, "talaba sabab yubordi", _body(r, 200))
+
+                r = client.post("/api/attendance/excuses", headers=S2, json={
+                    "record_id": record_id, "reason": "Yana bir marta",
+                })
+                check(r.status_code == 409, "takroriy sabab rad etildi", _body(r))
+
+                r = client.post("/api/attendance/excuses", headers=S, json={
+                    "record_id": record_id, "reason": "Begona sabab",
+                })
+                check(r.status_code == 403, "begona talaba sabab yubora olmaydi", _body(r))
+
+                r = client.get("/api/attendance/excuses/pending-count", headers=A)
+                check(r.status_code == 200 and r.json().get("count", 0) >= 1,
+                      "kutilayotgan sabablar soni", _body(r))
+
+                r = client.get("/api/attendance/excuses", headers=A, params={"status": "pending"})
+                check(r.status_code == 200 and any(
+                    x["id"] == record_id for x in _as_list(r.json())),
+                    "xodim sabab so'rovini ko'radi", _body(r, 200))
+
+                r = client.post(f"/api/attendance/excuses/{record_id}/review", headers=S2,
+                                json={"approve": True})
+                check(r.status_code == 403, "talaba sababni tasdiqlay olmaydi", _body(r))
+
+                r = client.post(f"/api/attendance/excuses/{record_id}/review", headers=A,
+                                json={"approve": True, "comment": "Spravka qabul qilindi"})
+                check(r.status_code == 200
+                      and r.json()["record"]["status"] == "excused"
+                      and r.json()["record"]["excuse_status"] == "approved",
+                      "xodim sababni tasdiqladi, holat 'sababli' bo'ldi", _body(r, 250))
+
+                r = client.post(f"/api/attendance/excuses/{record_id}/review", headers=A,
+                                json={"approve": False})
+                check(r.status_code == 409, "qayta ko'rib chiqish rad etildi", _body(r))
+
+                r = client.get("/api/attendance/my", headers=S2)
+                summary = r.json().get("summary", {}) if r.status_code == 200 else {}
+                check(summary.get("percent") == 100.0 and summary.get("excused") == 1,
+                      "sababli qoldirish foizni tushirmaydi", str(summary)[:150])
+
+                r = client.get("/api/notifications", headers=S2)
+                check(r.status_code == 200 and any(
+                    n.get("event_type") == "excuse_reviewed" for n in _as_list(r.json())),
+                    "sabab javobi bildirishnomasi keldi", _body(r, 200))
+
+        # Hisobot
+        r = client.get("/api/attendance/group", headers=A, params={
+            "student_group": group_name,
+            "from": (lesson_date - timedelta(days=7)).isoformat(),
+            "to": lesson_date.isoformat(),
+        })
+        report = r.json() if r.status_code == 200 else {}
+        check(r.status_code == 200 and report.get("dates") and report.get("students"),
+              "guruh hisoboti", _body(r, 200))
+
+        r = client.get("/api/attendance/group/report/pdf", headers=A, params={
+            "student_group": group_name,
+            "from": (lesson_date - timedelta(days=7)).isoformat(),
+            "to": lesson_date.isoformat(),
+        })
+        check(r.status_code == 200
+              and r.headers.get("content-type", "").startswith("application/pdf"),
+              "davomat PDF hisoboti", _body(r, 120))
+
+        r = client.get("/api/attendance/group", headers=A, params={
+            "student_group": group_name, "from": lesson_date.isoformat(),
+            "to": (lesson_date - timedelta(days=1)).isoformat(),
+        })
+        check(r.status_code == 400, "teskari davr rad etildi", _body(r))
+
+        r = client.get("/api/attendance/group", headers=S, params={
+            "student_group": group_name, "from": lesson_date.isoformat(),
+            "to": lesson_date.isoformat(),
+        })
+        check(r.status_code == 403, "talaba guruh hisobotini ko'ra olmaydi", _body(r))
+
+        if student2_id:
+            r = client.get(f"/api/attendance/summary/{student2_id}", headers=A)
+            check(r.status_code == 200 and r.json()["summary"]["total"] == 1,
+                  "xodim talaba davomat xulosasini ko'radi", _body(r, 150))
+            r = client.get(f"/api/attendance/summary/{student2_id}", headers=S)
+            check(r.status_code == 403, "talaba begona xulosani ko'ra olmaydi", _body(r))
+
+            r = client.get(f"/api/auth/students/{student2_id}/academic-stats", headers=A)
+            check(r.status_code == 200 and "attendance_percent" in r.json(),
+                  "davomat akademik statistikada", _body(r, 200))
+
+        r = client.get("/api/auth/analytics", headers=A)
+        totals = r.json().get("totals", {}) if r.status_code == 200 else {}
+        check("unmarked_lessons_today" in totals and "pending_excuses" in totals
+              and "attendance_percent" in r.json(),
+              "davomat xodim analitikasida", str(totals)[:200])
+
     print("\n20. Ariza rad etish oqimi")
     rej_login = f"e2e.rad.{suffix}"
     r = client.post("/api/auth/register", json={

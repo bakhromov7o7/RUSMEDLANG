@@ -163,6 +163,7 @@ Running upgrade  -> 0001_baseline
 Running upgrade 0001_baseline -> 0002_auth_and_grading
 Running upgrade 0002_auth_and_grading -> 0003_profile_features
 Running upgrade 0003_profile_features -> 0004_exam_mode
+Running upgrade 0004_exam_mode -> 0005_attendance
 ```
 
 ### Migratsiyalar ro'yxati
@@ -173,6 +174,7 @@ Running upgrade 0003_profile_features -> 0004_exam_mode
 | `0002_auth_and_grading` | Login/parol, server tomonda baholash, indeks va constraintlar |
 | `0003_profile_features` | Til, bildirishnoma sozlamalari, saqlanganlar, murojaatlar, FAQ, avatar |
 | `0004_exam_mode` | Imtihon rejimi: `exam_attempts`, `exam_questions` |
+| `0005_attendance` | Davomat: `attendance_records` (yo'qlama va sabab so'rovlari) |
 
 Barcha migratsiyalar **himoyalangan**: mavjud jadval/ustunni qayta yaratmaydi,
 shuning uchun ishlab turgan bazada ham bemalol ishga tushirish mumkin.
@@ -467,7 +469,7 @@ sudo -u ustozai .venv/bin/python scripts/e2e_test.py \
   --admin-login admin --admin-password 'PAROL'
 ```
 
-`149/149 test o'tdi` chiqishi kerak.
+`182/182 test o'tdi` chiqishi kerak.
 
 ---
 
